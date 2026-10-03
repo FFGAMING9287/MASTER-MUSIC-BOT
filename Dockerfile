@@ -1,4 +1,4 @@
-FROM python:3.9-slim-bullseye
+FROM python:3.9-slim-bookworm
 
 # Updating Packages
 RUN apt update && apt upgrade -y
