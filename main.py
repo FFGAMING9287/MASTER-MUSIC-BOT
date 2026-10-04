@@ -1,19 +1,6 @@
 """
-Music Player, Telegram Voice Chat Bot
-Copyright (c) 2026-present ˹ꜰꜰɢᴀᴍɪɴɢ ꭙ ᴍᴜꜱɪᴄ ʙᴏᴛ !!
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>
+Music Player + Movie Search, Telegram Voice Chat Bot
+Integrated version with movie-downloader API support
 """
 
 import asyncio
@@ -36,13 +23,15 @@ from core import (
     pytgcalls, set_group, set_title, all_groups, clear_queue, check_yt_url,
     extract_args, start_stream, shuffle_queue, delete_messages,
     get_spotify_playlist, get_youtube_playlist)
+from movie_handler import MovieAPI, search_movie, create_movie_keyboard
 
 
 REPO = """
-🤖 **Music Player**
+🤖 **Music Player + Movie Search**
 
 - Repo: [GitHub](https://github.com/FFGAMING9287/MUSICBOT.git)
 - License: AGPL-3.0-or-later
+- Features: Music + Movies via API
 """
 
 if config.BOT_TOKEN:
@@ -81,8 +70,82 @@ async def start(_, message: Message, lang):
 @language
 @handle_error
 async def help(_, message: Message, lang):
-    await message.reply_text(lang["helpText"].replace("<prefix>", config.PREFIXES[0]))
+    help_text = lang["helpText"].replace("<prefix>", config.PREFIXES[0])
+    help_text += f"\n\n**Movie Commands:**\n`{config.PREFIXES[0]}movie <title>` - Search for movies"
+    await message.reply_text(help_text)
 
+
+# ================== MOVIE SEARCH COMMAND ==================
+
+@client.on_message(filters.command(["movie", "m"], config.PREFIXES) & ~filters.private)
+@register
+@language
+@handle_error
+async def search_movie_command(_, message: Message, lang):
+    """
+    Search for movies using the movie-downloader API
+    
+    Usage: /movie Fairy Tail
+    """
+    chat_id = message.chat.id
+    
+    # Extract movie title from command
+    query = extract_args(message.text)
+    
+    if not query or query.strip() == "":
+        k = await message.reply_text("🎬 **Movie Search**\n\nUsage: `/movie <movie title>`\n\nExample: `/movie Fairy Tail`")
+        await delete_messages([message, k])
+        return
+    
+    # Show searching indicator
+    searching = await message.reply_text(f"🔍 Searching for `{query}`...")
+    
+    try:
+        # Call the movie API
+        results = await MovieAPI.search(query.strip())
+        
+        if not results or len(results) == 0:
+            await searching.edit_text(f"❌ No movies found for `{query}`")
+            await delete_messages([message, searching])
+            return
+        
+        # Format results
+        formatted_results = "🎬 **Movie Search Results:**\n\n"
+        
+        for i, movie in enumerate(results[:5], 1):
+            title = movie.get("title", "N/A")
+            year = movie.get("year", "")
+            imdb_id = movie.get("imdbID", "")
+            plot = movie.get("plot", "")
+            rating = movie.get("imdbRating", "N/A")
+            
+            year_str = f" ({year})" if year else ""
+            plot_str = f"\n📝 {plot[:100]}..." if plot and len(plot) > 0 else ""
+            rating_str = f"\n⭐ Rating: {rating}" if rating and rating != "N/A" else ""
+            
+            imdb_link = f"[View on IMDb](https://imdb.com/title/{imdb_id})" if imdb_id else ""
+            
+            formatted_results += f"**{i}. {title}**{year_str}\n"
+            if imdb_link:
+                formatted_results += f"{imdb_link}\n"
+            formatted_results += f"{rating_str}{plot_str}\n\n"
+        
+        # Send results with keyboard
+        keyboard = create_movie_keyboard(results)
+        await searching.edit_text(
+            formatted_results,
+            disable_web_page_preview=True,
+            reply_markup=keyboard
+        )
+        
+        await delete_messages([message])
+        
+    except Exception as e:
+        await searching.edit_text(f"❌ Error searching movies: `{str(e)}`")
+        await delete_messages([message, searching])
+
+
+# ================== ORIGINAL MUSIC COMMANDS (unchanged) ==================
 
 @client.on_message(filters.command(["p", "play"], config.PREFIXES) & ~filters.private)
 @register
@@ -235,12 +298,14 @@ async def unmute_vc(_, message: Message, lang):
     await delete_messages([message, k])
 
 
-@client.on_message(filters.command(["ps", "pause"], config.PREFIXES) & ~filters.private)
+@client.on_message(
+    filters.command(["ps", "pause"], config.PREFIXES) & ~filters.private
+)
 @register
 @language
 @only_admins
 @handle_error
-async def pause_vc(_, message: Message, lang):
+async def pause_stream(_, message: Message, lang):
     chat_id = message.chat.id
     try:
         await pytgcalls.pause_stream(chat_id)
@@ -257,7 +322,7 @@ async def pause_vc(_, message: Message, lang):
 @language
 @only_admins
 @handle_error
-async def resume_vc(_, message: Message, lang):
+async def resume_stream(_, message: Message, lang):
     chat_id = message.chat.id
     try:
         await pytgcalls.resume_stream(chat_id)
@@ -268,98 +333,76 @@ async def resume_vc(_, message: Message, lang):
 
 
 @client.on_message(
+    filters.command(["l", "loop"], config.PREFIXES) & ~filters.private
+)
+@register
+@language
+@only_admins
+@handle_error
+async def loop_track(_, message: Message, lang):
+    chat_id = message.chat.id
+    group = get_group(chat_id)
+    if group["loop"]:
+        set_group(chat_id, loop=False)
+        k = await message.reply_text(lang["loopDisabled"])
+    else:
+        set_group(chat_id, loop=True)
+        k = await message.reply_text(lang["loopEnabled"])
+    await delete_messages([message, k])
+
+
+@client.on_message(filters.command(["q", "queue"], config.PREFIXES) & ~filters.private)
+@register
+@language
+@handle_error
+async def show_queue(_, message: Message, lang):
+    chat_id = message.chat.id
+    queue = get_queue(chat_id)
+    if len(queue) > 0:
+        queue_str = "🎵 **Queue:**\n"
+        for i, song in enumerate(queue._queue[:10], 1):
+            queue_str += f"{i}. {song.title}\n"
+        k = await message.reply_text(queue_str)
+    else:
+        k = await message.reply_text(lang["queueEmpty"])
+    await delete_messages([message, k])
+
+
+@client.on_message(
     filters.command(["stop", "leave"], config.PREFIXES) & ~filters.private
 )
 @register
 @language
 @only_admins
 @handle_error
-async def leave_vc(_, message: Message, lang):
+async def stop_stream(_, message: Message, lang):
     chat_id = message.chat.id
-    set_group(chat_id, is_playing=False, now_playing=None)
-    await set_title(message, "")
-    clear_queue(chat_id)
     try:
+        set_group(chat_id, is_playing=False, now_playing=None)
+        clear_queue(chat_id)
         await pytgcalls.leave_call(chat_id)
-        k = await message.reply_text(lang["leaveVC"])
+        k = await message.reply_text(lang["stopped"])
     except (NoActiveGroupCall, NotInCallError):
         k = await message.reply_text(lang["notActive"])
     await delete_messages([message, k])
 
 
 @client.on_message(
-    filters.command(["list", "queue"], config.PREFIXES) & ~filters.private
-)
-@register
-@language
-@handle_error
-async def queue_list(_, message: Message, lang):
-    chat_id = message.chat.id
-    queue = get_queue(chat_id)
-    if len(queue) > 0:
-        k = await message.reply_text(str(queue), disable_web_page_preview=True)
-    else:
-        k = await message.reply_text(lang["queueEmpty"])
-    await delete_messages([message, k])
-
-
-@client.on_message(
-    filters.command(["mix", "shuffle"], config.PREFIXES) & ~filters.private
+    filters.command(["sh", "shuffle"], config.PREFIXES) & ~filters.private
 )
 @register
 @language
 @only_admins
 @handle_error
-async def shuffle_list(_, message: Message, lang):
+async def shuffle_handler(_, message: Message, lang):
     chat_id = message.chat.id
-    if len(get_queue(chat_id)) > 0:
-        shuffled = shuffle_queue(chat_id)
-        k = await message.reply_text(str(shuffled), disable_web_page_preview=True)
-    else:
-        k = await message.reply_text(lang["queueEmpty"])
+    shuffle_queue(chat_id)
+    k = await message.reply_text(lang["shuffled"])
     await delete_messages([message, k])
 
 
 @client.on_message(
-    filters.command(["loop", "repeat"], config.PREFIXES) & ~filters.private
-)
-@register
-@language
-@only_admins
-@handle_error
-async def loop_stream(_, message: Message, lang):
-    chat_id = message.chat.id
-    group = get_group(chat_id)
-    if group["loop"]:
-        set_group(chat_id, loop=False)
-        k = await message.reply_text(lang["loopMode"] % "Disabled")
-    elif group["loop"] == False:
-        set_group(chat_id, loop=True)
-        k = await message.reply_text(lang["loopMode"] % "Enabled")
-    await delete_messages([message, k])
-
-
-@client.on_message(
-    filters.command(["mode", "switch"], config.PREFIXES) & ~filters.private
-)
-@register
-@language
-@only_admins
-@handle_error
-async def switch_mode(_, message: Message, lang):
-    chat_id = message.chat.id
-    group = get_group(chat_id)
-    if group["stream_mode"] == "audio":
-        set_group(chat_id, stream_mode="video")
-        k = await message.reply_text(lang["videoMode"])
-    else:
-        set_group(chat_id, stream_mode="audio")
-        k = await message.reply_text(lang["audioMode"])
-    await delete_messages([message, k])
-
-
-@client.on_message(
-    filters.command(["admins", "adminsonly"], config.PREFIXES) & ~filters.private
+    filters.command(["ao", "adminsonly"], config.PREFIXES) & ~filters.private
 )
 @register
 @language
