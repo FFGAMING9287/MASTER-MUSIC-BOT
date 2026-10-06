@@ -1,6 +1,6 @@
 """
-Music Player + Movie Search, Telegram Voice Chat Bot
-Integrated version with movie-downloader API support
+Music Player + Movie Search + URL Stream, Telegram Voice Chat Bot
+Integrated version with movie-downloader API and Render URL Streaming support
 """
 
 import asyncio
@@ -8,6 +8,7 @@ asyncio.set_event_loop(asyncio.new_event_loop())
 import os
 import json
 import shutil
+import requests
 from config import config
 from core.song import Song
 from pyrogram.types import Message
@@ -25,13 +26,12 @@ from core import (
     get_spotify_playlist, get_youtube_playlist)
 from movie_handler import MovieAPI, search_movie, create_movie_keyboard
 
-
 REPO = """
 🤖 **Music Player + Movie Search**
 
 - Repo: [GitHub](https://github.com/FFGAMING9287/MUSICBOT.git)
 - License: AGPL-3.0-or-later
-- Features: Music + Movies via API
+- Features: Music + Movies via API + URL Stream
 """
 
 if config.BOT_TOKEN:
@@ -71,7 +71,7 @@ async def start(_, message: Message, lang):
 @handle_error
 async def help(_, message: Message, lang):
     help_text = lang["helpText"].replace("<prefix>", config.PREFIXES[0])
-    help_text += f"\n\n**Movie Commands:**\n`{config.PREFIXES[0]}movie <title>` - Search for movies"
+    help_text += f"\n\n**Movie Commands:**\n`{config.PREFIXES[0]}movie <title>` - Search for movies\n`{config.PREFIXES[0]}playurl <link>` - Stream video via URL"
     await message.reply_text(help_text)
 
 
@@ -145,7 +145,90 @@ async def search_movie_command(_, message: Message, lang):
         await delete_messages([message, searching])
 
 
-# ================== ORIGINAL MUSIC COMMANDS (unchanged) ==================
+# ================== URL / VIDEO STREAM COMMAND ==================
+
+@client.on_message(filters.command(["playurl", "vstream"], config.PREFIXES) & ~filters.private)
+@register
+@language
+@handle_error
+async def play_url_video(_, message: Message, lang):
+    if len(message.command) < 2:
+        k = await message.reply_text("Bhai, koi video link toh do! Jaise: `/playurl <link>`")
+        return await delete_messages([message, k])
+    
+    target_url = message.text.split(None, 1)[1]
+    msg = await message.reply_text("🔄 `Submitting link to server...`")
+
+    try:
+        # Step 1: Task Add karo Render API par
+        api_base = "https://fvz.onrender.com"
+        add_res = requests.post(f"{api_base}/api/add", json={"url": target_url}, timeout=15).json()
+        task_id = add_res.get("task_id")
+        
+        if not task_id:
+            return await msg.edit_text("❌ Server par task submit nahi ho paya.")
+
+        # Step 2: Task Status Poll karo jab tak complete na ho
+        await msg.edit_text("⏳ `Processing video stream on server...`")
+        data = None
+        
+        for _ in range(30): # Max 30 attempts (~60 seconds)
+            await asyncio.sleep(2)
+            status_res = requests.get(f"{api_base}/api/status/{task_id}", timeout=10).json()
+            status = status_res.get("status")
+            
+            if status == "completed":
+                data = status_res
+                break
+            elif status == "failed":
+                return await msg.edit_text(f"❌ Processing Failed: {status_res.get('error', 'Unknown error')}")
+
+        if not data:
+            return await msg.edit_text("⏱️️ Request timed out. Server response slow tha.")
+
+        # Step 3: Direct Link ya File URL nikaalo
+        direct_link = data.get("direct_link")
+        files = data.get("files", [])
+        
+        stream_url = direct_link
+        if not stream_url and len(files) > 0:
+            stream_url = files[0].get("link")
+            
+        if not stream_url:
+            return await msg.edit_text("❌ Server se koi playable stream link nahi mila.")
+
+        title = data.get("title", "Universal Media Stream")
+        thumb = data.get("thumbnail") or "https://telegra.ph/file/820cac7cb7b1a025542e2.jpg"
+
+        # Step 4: Song class bana kar Voice Chat mein stream karo
+        song_dict = {
+            "title": title,
+            "duration": "N/A",
+            "thumb": thumb,
+            "remote": stream_url,
+            "source": target_url,
+        }
+        
+        song = Song(song_dict, message)
+        chat_id = message.chat.id
+        group = get_group(chat_id)
+
+        if not group["is_playing"]:
+            set_group(chat_id, is_playing=True, now_playing=song)
+            await msg.edit_text(f"✅ **{title}** ready hai!\n🚀 Voice chat mein stream start ho rahi hai...")
+            await start_stream(song, lang)
+            await delete_messages([message])
+        else:
+            queue = get_queue(chat_id)
+            await queue.put(song)
+            await msg.edit_text(f"✅ **{title}** queue mein add kar di gayi hai! (Position: {len(queue)})")
+            await delete_messages([message])
+
+    except Exception as e:
+        await msg.edit_text(f"❌ Error aa gaya: `{str(e)}`")
+
+
+# ================== ORIGINAL MUSIC COMMANDS ==================
 
 @client.on_message(filters.command(["p", "play"], config.PREFIXES) & ~filters.private)
 @register
