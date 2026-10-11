@@ -11,7 +11,7 @@ import os
 import shutil
 
 import requests
-from pyrogram import Client, filters
+from pyrogram import Client, enums, filters
 from pyrogram.types import Message
 from pytgcalls import filters as fl
 from pytgcalls.exceptions import NoActiveGroupCall, NotInCallError
@@ -123,7 +123,7 @@ async def search_movie_command(_, message: Message, lang):
     if not query:
         k = await message.reply_text(
             "🎬 <b>Movie Search</b>\n\nUsage: <code>/movie &lt;title&gt;</code>\n\nExample: <code>/movie Overflow</code>",
-            parse_mode="html",
+            parse_mode=enums.ParseMode.HTML,
         )
         await delete_messages([message])
         return
@@ -131,7 +131,7 @@ async def search_movie_command(_, message: Message, lang):
     # Show searching indicator
     searching = await message.reply_text(
         f"🔍 Searching for <code>{html.escape(query[:200])}</code>...",
-        parse_mode="html",
+        parse_mode=enums.ParseMode.HTML,
     )
 
     try:
@@ -148,7 +148,7 @@ async def search_movie_command(_, message: Message, lang):
         if not results:
             await searching.edit_text(
                 f"❌ No titles found for <code>{html.escape(query[:200])}</code>",
-                parse_mode="html",
+                parse_mode=enums.ParseMode.HTML,
             )
             await delete_messages([message])
             return
@@ -159,7 +159,7 @@ async def search_movie_command(_, message: Message, lang):
             formatted_results += "\n\nChoose an available episode link below:"
         await searching.edit_text(
             formatted_results,
-            parse_mode="html",
+            parse_mode=enums.ParseMode.HTML,
             disable_web_page_preview=True,
             reply_markup=keyboard,
         )
@@ -293,7 +293,11 @@ async def play_stream(_, message: Message, lang):
         if not check:
             k = await message.reply_text(lang["notAllowed"])
             return await delete_messages([message, k])
-    song = await search(message)
+    try:
+        song = await search(message)
+    except TypeError:
+        logging.exception("YouTube search returned a malformed result")
+        song = None
     if song is None:
         k = await message.reply_text(lang["notFound"])
         return await delete_messages([message, k])
