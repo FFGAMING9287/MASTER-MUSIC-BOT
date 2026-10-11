@@ -7,9 +7,10 @@
 ```text
 /movie <title>
 /movie Overflow
+!movie Overflow
 ```
 
-The command works in groups. `/m` remains the existing mute alias, so it is intentionally not used for movie search.
+`/movie` is accepted regardless of the configured bot prefix. The configured prefix also works (`!movie` by default). The existing mute alias remains `!m` when the configured prefix is `!`; movie search does not take over the `m` alias.
 
 ## API
 

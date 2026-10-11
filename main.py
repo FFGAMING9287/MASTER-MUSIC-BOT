@@ -67,6 +67,8 @@ if config.BOT_TOKEN:
 else:
     client = app
 
+MOVIE_COMMAND_PREFIXES = list(dict.fromkeys([*config.PREFIXES, "/"]))
+
 
 @client.on_message(filters.command("repo", config.PREFIXES) & ~filters.bot)
 @handle_error
@@ -94,7 +96,8 @@ async def help(_, message: Message, lang):
     help_text = lang["helpText"].replace("<prefix>", config.PREFIXES[0])
     help_text += (
         "\n\n**Movie Commands:**\n"
-        f"`{config.PREFIXES[0]}movie <title>` - Search movies and available episodes\n"
+        "`/movie <title>` - Search movies and available episodes\n"
+        f"Configured prefix `{config.PREFIXES[0]}movie` also works\n"
         f"`{config.PREFIXES[0]}playurl <link>` - Stream video via URL\n"
         f"`{config.PREFIXES[0]}m` remains the mute command"
     )
@@ -104,7 +107,7 @@ async def help(_, message: Message, lang):
 # ================== MOVIE SEARCH COMMAND ==================
 
 
-@client.on_message(filters.command("movie", config.PREFIXES) & ~filters.private)
+@client.on_message(filters.command("movie", MOVIE_COMMAND_PREFIXES) & ~filters.private)
 @register
 @language
 @handle_error
