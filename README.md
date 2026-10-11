@@ -136,7 +136,7 @@ Command | Description
 • !ep / !export | Export the queue for import in future
 • !stop / !leave | Leave from vc and clear the queue
 • !update / !restart | Update and restart your music player
-• !movie [title] | Search Movie Downloader API and show available episode links
+• /movie [title] or !movie [title] | Search Movie Downloader API and show available episode links
 
 ## 🗣 <a name="languages"></a>Languages
 
