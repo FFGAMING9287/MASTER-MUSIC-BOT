@@ -5,6 +5,8 @@ Integrated version with movie-downloader API and Render URL Streaming support
 
 import asyncio
 asyncio.set_event_loop(asyncio.new_event_loop())
+import html
+import logging
 import os
 import json
 import shutil
@@ -24,7 +26,7 @@ from core import (
     pytgcalls, set_group, set_title, all_groups, clear_queue, check_yt_url,
     extract_args, start_stream, shuffle_queue, delete_messages,
     get_spotify_playlist, get_youtube_playlist)
-from movie_handler import MovieAPI, search_movie, create_movie_keyboard
+from movie_handler import MovieAPI, format_movie_results, create_movie_keyboard
 
 REPO = """
 🤖 **Music Player + Movie Search**
@@ -71,13 +73,13 @@ async def start(_, message: Message, lang):
 @handle_error
 async def help(_, message: Message, lang):
     help_text = lang["helpText"].replace("<prefix>", config.PREFIXES[0])
-    help_text += f"\n\n**Movie Commands:**\n`{config.PREFIXES[0]}movie <title>` - Search for movies\n`{config.PREFIXES[0]}playurl <link>` - Stream video via URL"
+    help_text += f"\n\n**Movie Commands:**\n`{config.PREFIXES[0]}movie <title>` - Search movies and available episodes\n`{config.PREFIXES[0]}playurl <link>` - Stream video via URL\n`{config.PREFIXES[0]}m` remains the mute command"
     await message.reply_text(help_text)
 
 
 # ================== MOVIE SEARCH COMMAND ==================
 
-@client.on_message(filters.command(["movie", "m"], config.PREFIXES) & ~filters.private)
+@client.on_message(filters.command("movie", config.PREFIXES) & ~filters.private)
 @register
 @language
 @handle_error
@@ -87,62 +89,58 @@ async def search_movie_command(_, message: Message, lang):
     
     Usage: /movie Fairy Tail
     """
-    chat_id = message.chat.id
-    
     # Extract movie title from command
-    query = extract_args(message.text)
+    query = (extract_args(message.text) or "").strip()
     
     if not query or query.strip() == "":
-        k = await message.reply_text("🎬 **Movie Search**\n\nUsage: `/movie <movie title>`\n\nExample: `/movie Fairy Tail`")
-        await delete_messages([message, k])
+        k = await message.reply_text("🎬 <b>Movie Search</b>\n\nUsage: <code>/movie &lt;title&gt;</code>\n\nExample: <code>/movie Overflow</code>", parse_mode="html")
+        await delete_messages([message])
         return
     
     # Show searching indicator
-    searching = await message.reply_text(f"🔍 Searching for `{query}`...")
+    searching = await message.reply_text(
+        f"🔍 Searching for <code>{html.escape(query[:200])}</code>...",
+        parse_mode="html",
+    )
     
     try:
         # Call the movie API
         results = await MovieAPI.search(query.strip())
         
-        if not results or len(results) == 0:
-            await searching.edit_text(f"❌ No movies found for `{query}`")
-            await delete_messages([message, searching])
+        if results is None:
+            await searching.edit_text(
+                "❌ The movie search service is temporarily unavailable. Please try again later."
+            )
+            await delete_messages([message])
+            return
+
+        if not results:
+            await searching.edit_text(
+                f"❌ No titles found for <code>{html.escape(query[:200])}</code>",
+                parse_mode="html",
+            )
+            await delete_messages([message])
             return
         
-        # Format results
-        formatted_results = "🎬 **Movie Search Results:**\n\n"
-        
-        for i, movie in enumerate(results[:5], 1):
-            title = movie.get("title", "N/A")
-            year = movie.get("year", "")
-            imdb_id = movie.get("imdbID", "")
-            plot = movie.get("plot", "")
-            rating = movie.get("imdbRating", "N/A")
-            
-            year_str = f" ({year})" if year else ""
-            plot_str = f"\n📝 {plot[:100]}..." if plot and len(plot) > 0 else ""
-            rating_str = f"\n⭐ Rating: {rating}" if rating and rating != "N/A" else ""
-            
-            imdb_link = f"[View on IMDb](https://imdb.com/title/{imdb_id})" if imdb_id else ""
-            
-            formatted_results += f"**{i}. {title}**{year_str}\n"
-            if imdb_link:
-                formatted_results += f"{imdb_link}\n"
-            formatted_results += f"{rating_str}{plot_str}\n\n"
-        
-        # Send results with keyboard
         keyboard = create_movie_keyboard(results)
+        formatted_results = format_movie_results(results)
+        if keyboard:
+            formatted_results += "\n\nChoose an available episode link below:"
         await searching.edit_text(
             formatted_results,
+            parse_mode="html",
             disable_web_page_preview=True,
             reply_markup=keyboard
         )
         
         await delete_messages([message])
         
-    except Exception as e:
-        await searching.edit_text(f"❌ Error searching movies: `{str(e)}`")
-        await delete_messages([message, searching])
+    except Exception:
+        logging.exception("Movie search command failed")
+        await searching.edit_text(
+            "❌ Something went wrong while formatting the movie search. Please try again."
+        )
+        await delete_messages([message])
 
 
 # ================== URL / VIDEO STREAM COMMAND ==================
