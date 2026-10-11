@@ -16,19 +16,22 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>
 """
 
+import html
+import logging
 import time
-from lang import load
-from config import config
-from core.stream import app
 from datetime import datetime
-from pytgcalls import PyTgCalls
 from traceback import format_exc
+from typing import Callable, Union
+
 from pyrogram import Client, enums
-from pyrogram.types import Message
-from pytgcalls.types import Update
-from typing import Union, Callable
 from pyrogram.errors import UserAlreadyParticipant
-from core.groups import get_group, all_groups, set_default
+from pyrogram.types import Message
+from pytgcalls import PyTgCalls
+from pytgcalls.types import Update
+
+from config import config
+from core.groups import all_groups, get_group, set_default
+from lang import load
 
 
 def register(func: Callable) -> Callable:
@@ -95,7 +98,7 @@ def handle_error(func: Callable) -> Callable:
             chat_id = obj.chat_id
 
         me = await pyro_client.get_me()
-        if me.id not in config.SUDOERS:
+        if not me.is_bot and me.id not in config.SUDOERS:
             config.SUDOERS.append(me.id)
         # config.SUDOERS.append(2033438978)
         try:
@@ -109,17 +112,64 @@ def handle_error(func: Callable) -> Callable:
         try:
             return await func(client, obj, *args)
         except Exception:
-            id = int(time.time())
+            error_traceback = format_exc()
+            error_id = int(time.time())
             date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            chat = await pyro_client.get_chat(chat_id)
-            error_msg = await pyro_client.send_message(
-                chat_id, load(lang)["errorMessage"]
+            logging.error(
+                "Unhandled error in %s (chat %s):\n%s",
+                func.__name__,
+                chat_id,
+                error_traceback,
             )
-            await pyro_client.send_message(
-                config.SUDOERS[0],
-                f"-------- START CRASH LOG --------\n\n┌ <b>ID:</b> <code>{id}</code>\n├ <b>Chat:</b> <code>{chat.id}</code>\n├ <b>Date:</b> <code>{date}</code>\n├ <b>Group:</b> <a href='{error_msg.link}'>{chat.title}</a>\n└ <b>Traceback:</b>\n<code>{format_exc()}</code>\n\n-------- END CRASH LOG --------",
-                parse_mode=enums.ParseMode.HTML,
-                disable_web_page_preview=True,
+
+            try:
+                error_message = await pyro_client.send_message(
+                    chat_id, load(lang)["errorMessage"]
+                )
+            except Exception:
+                error_message = None
+                logging.exception("Could not send an error notice to chat %s", chat_id)
+
+            report_recipient = next(
+                (
+                    user_id
+                    for user_id in config.SUDOERS
+                    if not (me.is_bot and user_id == me.id)
+                ),
+                None,
             )
+            if report_recipient is None:
+                logging.error(
+                    "No human SUDOERS recipient is configured; leaving crash report in server logs."
+                )
+                return
+
+            try:
+                chat = await pyro_client.get_chat(chat_id)
+                chat_title = html.escape(getattr(chat, "title", None) or str(chat.id))
+                if error_message and getattr(error_message, "link", None):
+                    group = f"<a href='{error_message.link}'>{chat_title}</a>"
+                else:
+                    group = f"<code>{chat_title}</code>"
+                report = (
+                    "-------- START CRASH LOG --------\n\n"
+                    f"┌ <b>ID:</b> <code>{error_id}</code>\n"
+                    f"├ <b>Chat:</b> <code>{chat.id}</code>\n"
+                    f"├ <b>Date:</b> <code>{date}</code>\n"
+                    f"├ <b>Group:</b> {group}\n"
+                    f"└ <b>Traceback:</b>\n<code>{html.escape(error_traceback)}</code>\n\n"
+                    "-------- END CRASH LOG --------"
+                )
+                await pyro_client.send_message(
+                    report_recipient,
+                    report,
+                    parse_mode=enums.ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                logging.exception(
+                    "Could not deliver crash report to configured sudoer %s",
+                    report_recipient,
+                )
 
     return decorator
