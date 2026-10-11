@@ -10,7 +10,6 @@ from urllib.parse import urlsplit
 import aiohttp
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -79,9 +78,11 @@ def format_movie_results(results: List[Dict], limit: int = 5) -> str:
         raw_languages = item.get("languages")
         if isinstance(raw_languages, list):
             languages = [
-                language.get("language") or language.get("name")
-                if isinstance(language, dict)
-                else language
+                (
+                    language.get("language") or language.get("name")
+                    if isinstance(language, dict)
+                    else language
+                )
                 for language in raw_languages
             ]
         else:
@@ -92,7 +93,9 @@ def format_movie_results(results: List[Dict], limit: int = 5) -> str:
                 for episode in episodes
                 if isinstance(episode, dict) and episode.get("language")
             ]
-        languages = list(dict.fromkeys(str(language) for language in languages if language))
+        languages = list(
+            dict.fromkeys(str(language) for language in languages if language)
+        )
         language_text = ", ".join(str(language) for language in languages[:8])
         if language_text:
             details.append(f"🔊 {html.escape(language_text[:120])}")
@@ -156,9 +159,12 @@ def create_movie_keyboard(
             if not isinstance(qualities, list):
                 continue
             usable = [
-                quality for quality in qualities
+                quality
+                for quality in qualities
                 if isinstance(quality, dict)
-                and _is_http_url(quality.get("download_url") or quality.get("downloadUrl"))
+                and _is_http_url(
+                    quality.get("download_url") or quality.get("downloadUrl")
+                )
             ]
             if not usable:
                 continue
