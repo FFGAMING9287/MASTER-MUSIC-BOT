@@ -2,39 +2,56 @@ name: pyLint
 
 on:
   push:
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   pyLint:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Setup Python
-        uses: actions/setup-python@v1
+        uses: actions/setup-python@v5
         with:
-          python-version: 3.10
-      - name: Install dependencies
-        run: pip install autopep8 autoflake isort black
-      - name: "[autopep8] Format fixes"
+          python-version: "3.10"
+      - name: Install checkers
+        run: python -m pip install autoflake isort black
+      - name: Find changed Python files
+        id: changed
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
         run: |
-          find -name "*.py" -not -path "./venv/*" -exec autopep8 --verbose --in-place --recursive --aggressive --aggressive '{}' \;
-      - name: "[autoflake] Remove unused imports and variables"
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_NAME" = "$BASE_REF" ]; then
+            if [[ "$GITHUB_EVENT_BEFORE" =~ ^0+$ ]]; then
+              git diff-tree --root --no-commit-id --name-only -r "$GITHUB_SHA" -- '*.py' > /tmp/changed-python-files
+            else
+              git diff --name-only "$GITHUB_EVENT_BEFORE" "$GITHUB_SHA" -- '*.py' > /tmp/changed-python-files
+            fi
+          else
+            git fetch origin "$BASE_REF" --quiet
+            git diff --name-only "origin/$BASE_REF...HEAD" -- '*.py' > /tmp/changed-python-files
+          fi
+          if [ -s /tmp/changed-python-files ]; then
+            echo "has_python=true" >> "$GITHUB_OUTPUT"
+            echo "Changed Python files:"
+            cat /tmp/changed-python-files
+          else
+            echo "has_python=false" >> "$GITHUB_OUTPUT"
+            echo "No changed Python files to check."
+          fi
+      - name: Check changed Python files (read-only)
+        if: steps.changed.outputs.has_python == 'true'
         run: |
-          find . -regex "^.\/\Main\/\w+\/.+\.py$" -exec autoflake --in-place --recursive --remove-all-unused-imports --remove-unused-variables --ignore-init-module-imports -v -v '{}' \;
-      - name: "[black] lint"
-        run: |
-          black -v .
-      - name: "[isort] lint"
-        run: |
-          isort -v --cs --ca --ls --lss --ds --fss --lai 2 -m 4 .
-      - name: Commit Checkout
-        uses: stefanzweifel/git-auto-commit-action@v4
-        with:
-          repository: .
-          commit_user_name: FFGAMINGYT435
-          ccommit_user_email: ffgaming92877@gmail.com
-          commit_options: '--no-verify'
-          commit_message: 'auto: refactor'
-          commit_author: ˹ꜰꜰɢᴀᴍɪɴɢ ꭙ ᴍᴜꜱɪᴄ ʙᴏᴛ !! <ffgaming56666@gmail.com>
-
+          mapfile -t files < /tmp/changed-python-files
+          autoflake --check-diff --remove-all-unused-imports --remove-unused-variables --ignore-init-module-imports "${files[@]}"
+          black --check --verbose "${files[@]}"
+          isort --verbose --check-only --profile black "${files[@]}"
+          python -m py_compile "${files[@]}"

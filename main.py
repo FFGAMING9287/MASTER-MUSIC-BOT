@@ -4,27 +4,48 @@ Integrated version with movie-downloader API and Render URL Streaming support
 """
 
 import asyncio
-asyncio.set_event_loop(asyncio.new_event_loop())
-import os
+import html
 import json
+import logging
+import os
 import shutil
+
 import requests
-from config import config
-from core.song import Song
+from pyrogram import Client, filters
 from pyrogram.types import Message
 from pytgcalls import filters as fl
-from pyrogram import Client, filters
-from pytgcalls.types import Update, ChatUpdate
+from pytgcalls.exceptions import NoActiveGroupCall, NotInCallError
+from pytgcalls.types import ChatUpdate, Update
 from pytgcalls.types.stream import StreamEnded
-from core.decorators import language, register, only_admins, handle_error
-from pytgcalls.exceptions import (
-    NotInCallError, NoActiveGroupCall)
+
+from config import config
 from core import (
-    app, ytdl, safone, search, is_sudo, is_admin, get_group, get_queue,
-    pytgcalls, set_group, set_title, all_groups, clear_queue, check_yt_url,
-    extract_args, start_stream, shuffle_queue, delete_messages,
-    get_spotify_playlist, get_youtube_playlist)
-from movie_handler import MovieAPI, search_movie, create_movie_keyboard
+    all_groups,
+    app,
+    check_yt_url,
+    clear_queue,
+    delete_messages,
+    extract_args,
+    get_group,
+    get_queue,
+    get_spotify_playlist,
+    get_youtube_playlist,
+    is_admin,
+    is_sudo,
+    pytgcalls,
+    safone,
+    search,
+    set_group,
+    set_title,
+    shuffle_queue,
+    start_stream,
+    ytdl,
+)
+from core.decorators import handle_error, language, only_admins, register
+from core.song import Song
+from movie_handler import MovieAPI, create_movie_keyboard, format_movie_results
+
+asyncio.set_event_loop(asyncio.new_event_loop())
 
 REPO = """
 🤖 **Music Player + Movie Search**
@@ -71,134 +92,156 @@ async def start(_, message: Message, lang):
 @handle_error
 async def help(_, message: Message, lang):
     help_text = lang["helpText"].replace("<prefix>", config.PREFIXES[0])
-    help_text += f"\n\n**Movie Commands:**\n`{config.PREFIXES[0]}movie <title>` - Search for movies\n`{config.PREFIXES[0]}playurl <link>` - Stream video via URL"
+    help_text += (
+        "\n\n**Movie Commands:**\n"
+        f"`{config.PREFIXES[0]}movie <title>` - Search movies and available episodes\n"
+        f"`{config.PREFIXES[0]}playurl <link>` - Stream video via URL\n"
+        f"`{config.PREFIXES[0]}m` remains the mute command"
+    )
     await message.reply_text(help_text)
 
 
 # ================== MOVIE SEARCH COMMAND ==================
 
-@client.on_message(filters.command(["movie", "m"], config.PREFIXES) & ~filters.private)
+
+@client.on_message(filters.command("movie", config.PREFIXES) & ~filters.private)
 @register
 @language
 @handle_error
 async def search_movie_command(_, message: Message, lang):
     """
     Search for movies using the movie-downloader API
-    
+
     Usage: /movie Fairy Tail
     """
-    chat_id = message.chat.id
-    
     # Extract movie title from command
-    query = extract_args(message.text)
-    
-    if not query or query.strip() == "":
-        k = await message.reply_text("🎬 **Movie Search**\n\nUsage: `/movie <movie title>`\n\nExample: `/movie Fairy Tail`")
-        await delete_messages([message, k])
+    query = (extract_args(message.text) or "").strip()
+
+    if not query:
+        k = await message.reply_text(
+            "🎬 <b>Movie Search</b>\n\nUsage: <code>/movie &lt;title&gt;</code>\n\nExample: <code>/movie Overflow</code>",
+            parse_mode="html",
+        )
+        await delete_messages([message])
         return
-    
+
     # Show searching indicator
-    searching = await message.reply_text(f"🔍 Searching for `{query}`...")
-    
+    searching = await message.reply_text(
+        f"🔍 Searching for <code>{html.escape(query[:200])}</code>...",
+        parse_mode="html",
+    )
+
     try:
         # Call the movie API
         results = await MovieAPI.search(query.strip())
-        
-        if not results or len(results) == 0:
-            await searching.edit_text(f"❌ No movies found for `{query}`")
-            await delete_messages([message, searching])
+
+        if results is None:
+            await searching.edit_text(
+                "❌ The movie search service is temporarily unavailable. Please try again later."
+            )
+            await delete_messages([message])
             return
-        
-        # Format results
-        formatted_results = "🎬 **Movie Search Results:**\n\n"
-        
-        for i, movie in enumerate(results[:5], 1):
-            title = movie.get("title", "N/A")
-            year = movie.get("year", "")
-            imdb_id = movie.get("imdbID", "")
-            plot = movie.get("plot", "")
-            rating = movie.get("imdbRating", "N/A")
-            
-            year_str = f" ({year})" if year else ""
-            plot_str = f"\n📝 {plot[:100]}..." if plot and len(plot) > 0 else ""
-            rating_str = f"\n⭐ Rating: {rating}" if rating and rating != "N/A" else ""
-            
-            imdb_link = f"[View on IMDb](https://imdb.com/title/{imdb_id})" if imdb_id else ""
-            
-            formatted_results += f"**{i}. {title}**{year_str}\n"
-            if imdb_link:
-                formatted_results += f"{imdb_link}\n"
-            formatted_results += f"{rating_str}{plot_str}\n\n"
-        
-        # Send results with keyboard
+
+        if not results:
+            await searching.edit_text(
+                f"❌ No titles found for <code>{html.escape(query[:200])}</code>",
+                parse_mode="html",
+            )
+            await delete_messages([message])
+            return
+
         keyboard = create_movie_keyboard(results)
+        formatted_results = format_movie_results(results)
+        if keyboard:
+            formatted_results += "\n\nChoose an available episode link below:"
         await searching.edit_text(
             formatted_results,
+            parse_mode="html",
             disable_web_page_preview=True,
-            reply_markup=keyboard
+            reply_markup=keyboard,
         )
-        
+
         await delete_messages([message])
-        
-    except Exception as e:
-        await searching.edit_text(f"❌ Error searching movies: `{str(e)}`")
-        await delete_messages([message, searching])
+
+    except Exception:
+        logging.exception("Movie search command failed")
+        await searching.edit_text(
+            "❌ Something went wrong while formatting the movie search. Please try again."
+        )
+        await delete_messages([message])
 
 
 # ================== URL / VIDEO STREAM COMMAND ==================
 
-@client.on_message(filters.command(["playurl", "vstream"], config.PREFIXES) & ~filters.private)
+
+@client.on_message(
+    filters.command(["playurl", "vstream"], config.PREFIXES) & ~filters.private
+)
 @register
 @language
 @handle_error
 async def play_url_video(_, message: Message, lang):
     if len(message.command) < 2:
-        k = await message.reply_text("Bhai, koi video link toh do! Jaise: `/playurl <link>`")
+        k = await message.reply_text(
+            "Bhai, koi video link toh do! Jaise: `/playurl <link>`"
+        )
         return await delete_messages([message, k])
-    
+
     target_url = message.text.split(None, 1)[1]
     msg = await message.reply_text("🔄 `Submitting link to server...`")
 
     try:
         # Step 1: Task Add karo Render API par
         api_base = "https://fvz.onrender.com"
-        add_res = requests.post(f"{api_base}/api/add", json={"url": target_url}, timeout=15).json()
+        add_res = requests.post(
+            f"{api_base}/api/add", json={"url": target_url}, timeout=15
+        ).json()
         task_id = add_res.get("task_id")
-        
+
         if not task_id:
             return await msg.edit_text("❌ Server par task submit nahi ho paya.")
 
         # Step 2: Task Status Poll karo jab tak complete na ho
         await msg.edit_text("⏳ `Processing video stream on server...`")
         data = None
-        
-        for _ in range(30): # Max 30 attempts (~60 seconds)
+
+        for _ in range(30):  # Max 30 attempts (~60 seconds)
             await asyncio.sleep(2)
-            status_res = requests.get(f"{api_base}/api/status/{task_id}", timeout=10).json()
+            status_res = requests.get(
+                f"{api_base}/api/status/{task_id}", timeout=10
+            ).json()
             status = status_res.get("status")
-            
+
             if status == "completed":
                 data = status_res
                 break
             elif status == "failed":
-                return await msg.edit_text(f"❌ Processing Failed: {status_res.get('error', 'Unknown error')}")
+                return await msg.edit_text(
+                    f"❌ Processing Failed: {status_res.get('error', 'Unknown error')}"
+                )
 
         if not data:
-            return await msg.edit_text("⏱️️ Request timed out. Server response slow tha.")
+            return await msg.edit_text(
+                "⏱️️ Request timed out. Server response slow tha."
+            )
 
         # Step 3: Direct Link ya File URL nikaalo
         direct_link = data.get("direct_link")
         files = data.get("files", [])
-        
+
         stream_url = direct_link
         if not stream_url and len(files) > 0:
             stream_url = files[0].get("link")
-            
+
         if not stream_url:
-            return await msg.edit_text("❌ Server se koi playable stream link nahi mila.")
+            return await msg.edit_text(
+                "❌ Server se koi playable stream link nahi mila."
+            )
 
         title = data.get("title", "Universal Media Stream")
-        thumb = data.get("thumbnail") or "https://telegra.ph/file/820cac7cb7b1a025542e2.jpg"
+        thumb = (
+            data.get("thumbnail") or "https://telegra.ph/file/820cac7cb7b1a025542e2.jpg"
+        )
 
         # Step 4: Song class bana kar Voice Chat mein stream karo
         song_dict = {
@@ -208,20 +251,24 @@ async def play_url_video(_, message: Message, lang):
             "remote": stream_url,
             "source": target_url,
         }
-        
+
         song = Song(song_dict, message)
         chat_id = message.chat.id
         group = get_group(chat_id)
 
         if not group["is_playing"]:
             set_group(chat_id, is_playing=True, now_playing=song)
-            await msg.edit_text(f"✅ **{title}** ready hai!\n🚀 Voice chat mein stream start ho rahi hai...")
+            await msg.edit_text(
+                f"✅ **{title}** ready hai!\n🚀 Voice chat mein stream start ho rahi hai..."
+            )
             await start_stream(song, lang)
             await delete_messages([message])
         else:
             queue = get_queue(chat_id)
             await queue.put(song)
-            await msg.edit_text(f"✅ **{title}** queue mein add kar di gayi hai! (Position: {len(queue)})")
+            await msg.edit_text(
+                f"✅ **{title}** queue mein add kar di gayi hai! (Position: {len(queue)})"
+            )
             await delete_messages([message])
 
     except Exception as e:
@@ -229,6 +276,7 @@ async def play_url_video(_, message: Message, lang):
 
 
 # ================== ORIGINAL MUSIC COMMANDS ==================
+
 
 @client.on_message(filters.command(["p", "play"], config.PREFIXES) & ~filters.private)
 @register
@@ -381,9 +429,7 @@ async def unmute_vc(_, message: Message, lang):
     await delete_messages([message, k])
 
 
-@client.on_message(
-    filters.command(["ps", "pause"], config.PREFIXES) & ~filters.private
-)
+@client.on_message(filters.command(["ps", "pause"], config.PREFIXES) & ~filters.private)
 @register
 @language
 @only_admins
@@ -415,9 +461,7 @@ async def resume_stream(_, message: Message, lang):
     await delete_messages([message, k])
 
 
-@client.on_message(
-    filters.command(["l", "loop"], config.PREFIXES) & ~filters.private
-)
+@client.on_message(filters.command(["l", "loop"], config.PREFIXES) & ~filters.private)
 @register
 @language
 @only_admins
