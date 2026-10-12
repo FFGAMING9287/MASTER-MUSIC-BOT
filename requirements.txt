@@ -6,4 +6,4 @@ aiohttp
 aiofiles
 spotipy
 Pillow
-youtubesearchpython
+youtube-search-python
