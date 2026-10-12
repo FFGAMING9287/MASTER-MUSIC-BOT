@@ -53,6 +53,9 @@ class MovieDownloadManager:
     def __init__(self):
         self.directory = Path(config.MOVIE_DOWNLOAD_DIR).expanduser()
         self.allowed_hosts = set(config.MOVIE_ALLOWED_DOWNLOAD_HOSTS)
+        logger.info(
+            "Movie downloader approved hostnames: %s", sorted(self.allowed_hosts)
+        )
         self.max_bytes = config.MOVIE_MAX_DOWNLOAD_MB * 1024 * 1024
         self.cache_ttl = config.MOVIE_CACHE_TTL_HOURS * 60 * 60
         self._semaphore = asyncio.Semaphore(config.MOVIE_MAX_CONCURRENT_DOWNLOADS)
@@ -83,6 +86,11 @@ class MovieDownloadManager:
         ):
             raise MovieDownloadError("Only direct HTTPS media links are supported.")
         if host not in self.allowed_hosts:
+            logger.warning(
+                "Rejected movie download hostname %r; approved hostnames: %s",
+                host,
+                sorted(self.allowed_hosts),
+            )
             raise MovieDownloadError(
                 "This download host is not approved. Ask the bot owner to add its exact hostname to MOVIE_ALLOWED_DOWNLOAD_HOSTS."
             )
