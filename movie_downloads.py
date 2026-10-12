@@ -5,10 +5,13 @@ import errno
 import hashlib
 import ipaddress
 import logging
+import math
 import os
 import shutil
 import socket
 import time
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 from urllib.parse import urljoin, urlsplit
@@ -37,14 +40,43 @@ _REDIRECT_CODES = {301, 302, 303, 307, 308}
 _MAX_REDIRECTS = 5
 _MAX_ATTEMPTS = 3
 _RESERVE_BYTES = 64 * 1024 * 1024
+_MAX_AUTOMATIC_RETRY_AFTER = 60
+_DEFAULT_429_BACKOFF_SECONDS = 10
+
+
+def _retry_after_seconds(value: Optional[str]) -> Optional[float]:
+    if not value:
+        return None
+    try:
+        seconds = float(value.strip())
+        if math.isfinite(seconds) and seconds >= 0:
+            return seconds
+    except (AttributeError, ValueError):
+        pass
+    try:
+        retry_at = parsedate_to_datetime(value)
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        return max(0.0, retry_at.timestamp() - time.time())
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
 
 
 class MovieDownloadError(Exception):
     """A user-safe download failure, optionally suitable for Retry."""
 
-    def __init__(self, message: str, *, retryable: bool = False):
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        rate_limited: bool = False,
+        retry_after: Optional[float] = None,
+    ):
         super().__init__(message)
         self.retryable = retryable
+        self.rate_limited = rate_limited
+        self.retry_after = retry_after
 
 
 class MovieDownloadManager:
@@ -261,7 +293,33 @@ class MovieDownloadManager:
                     raise MovieDownloadError(
                         "This media link has expired or is unavailable. Return to results and choose another link."
                     )
-                if response.status == 429 or response.status >= 500:
+                if response.status == 429:
+                    retry_after = _retry_after_seconds(
+                        response.headers.get("Retry-After")
+                    )
+                    host = urlsplit(final_url).hostname or "<unknown>"
+                    logger.warning(
+                        "Movie media host %s returned HTTP 429; retry-after-seconds=%s",
+                        host,
+                        (
+                            retry_after
+                            if retry_after is not None
+                            else "not provided/invalid"
+                        ),
+                    )
+                    retry_hint = (
+                        f" Retry after at least {math.ceil(retry_after)} seconds."
+                        if retry_after is not None
+                        else " Please retry later."
+                    )
+                    raise MovieDownloadError(
+                        "The media host returned HTTP 429 and is rate-limiting downloads."
+                        + retry_hint,
+                        retryable=True,
+                        rate_limited=True,
+                        retry_after=retry_after,
+                    )
+                if response.status >= 500:
                     raise MovieDownloadError(
                         f"The media host returned HTTP {response.status}; you can retry shortly.",
                         retryable=True,
@@ -385,6 +443,7 @@ class MovieDownloadManager:
 
             last_error = None
             for attempt in range(_MAX_ATTEMPTS):
+                delay = 0.0
                 try:
                     path = await self._download_once(
                         url, digest, progress, protected_paths
@@ -395,6 +454,21 @@ class MovieDownloadManager:
                     last_error = exc
                     if not exc.retryable or attempt == _MAX_ATTEMPTS - 1:
                         raise
+                    if exc.rate_limited:
+                        if exc.retry_after is not None:
+                            if exc.retry_after > _MAX_AUTOMATIC_RETRY_AFTER:
+                                raise MovieDownloadError(
+                                    "The media host asked the bot to wait at least "
+                                    f"{math.ceil(exc.retry_after)} seconds before retrying.",
+                                    retryable=True,
+                                    rate_limited=True,
+                                    retry_after=exc.retry_after,
+                                ) from exc
+                            delay = exc.retry_after
+                        else:
+                            delay = min(_DEFAULT_429_BACKOFF_SECONDS * (2**attempt), 60)
+                    else:
+                        delay = min(2**attempt, 4)
                 except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                     last_error = MovieDownloadError(
                         "Temporary network error while downloading media.",
@@ -402,7 +476,8 @@ class MovieDownloadManager:
                     )
                     if attempt == _MAX_ATTEMPTS - 1:
                         raise last_error from exc
-                await asyncio.sleep(min(2**attempt, 4))
+                    delay = min(2**attempt, 4)
+                await asyncio.sleep(delay)
             if last_error:
                 raise last_error
             raise MovieDownloadError("The download failed for an unknown reason.")
