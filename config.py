@@ -17,10 +17,17 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>
 """
 
 import os
+
 from dotenv import load_dotenv
 
-
 load_dotenv()
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
 
 
 class Config:
@@ -45,6 +52,21 @@ class Config:
             else "video"
         )
         self.ADMINS_ONLY: bool = os.environ.get("ADMINS_ONLY", False)
+        self.MOVIE_DOWNLOAD_DIR: str = os.environ.get(
+            "MOVIE_DOWNLOAD_DIR", "/tmp/master-music-bot/movies"
+        )
+        self.MOVIE_ALLOWED_DOWNLOAD_HOSTS: set = {
+            host.strip().lower().rstrip(".")
+            for host in os.environ.get("MOVIE_ALLOWED_DOWNLOAD_HOSTS", "").split(",")
+            if host.strip()
+        }
+        self.MOVIE_MAX_DOWNLOAD_MB: int = _positive_int_env(
+            "MOVIE_MAX_DOWNLOAD_MB", 2048
+        )
+        self.MOVIE_CACHE_TTL_HOURS: int = _positive_int_env("MOVIE_CACHE_TTL_HOURS", 24)
+        self.MOVIE_MAX_CONCURRENT_DOWNLOADS: int = _positive_int_env(
+            "MOVIE_MAX_CONCURRENT_DOWNLOADS", 2
+        )
         self.SPOTIFY_CLIENT_ID: str = os.environ.get("SPOTIFY_CLIENT_ID", None)
         self.SPOTIFY_CLIENT_SECRET: str = os.environ.get("SPOTIFY_CLIENT_SECRET", None)
 

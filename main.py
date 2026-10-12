@@ -43,7 +43,13 @@ from core import (
 )
 from core.decorators import handle_error, language, only_admins, register
 from core.song import Song
-from movie_handler import MovieAPI, create_movie_keyboard, format_movie_results
+from movie_feature import MovieFeature
+from movie_handler import (
+    MovieAPI,
+    create_movie_keyboard,
+    create_movie_session,
+    format_movie_results,
+)
 
 asyncio.set_event_loop(asyncio.new_event_loop())
 
@@ -153,7 +159,8 @@ async def search_movie_command(_, message: Message, lang):
             await delete_messages([message])
             return
 
-        keyboard = create_movie_keyboard(results)
+        session_id = create_movie_session(results, message.chat.id)
+        keyboard = create_movie_keyboard(session_id) if session_id else None
         formatted_results = format_movie_results(results)
         if keyboard:
             formatted_results += "\n\nChoose an available episode link below:"
@@ -383,6 +390,7 @@ async def skip_track(_, message: Message, lang):
     if group["loop"]:
         await start_stream(group["now_playing"], lang)
     else:
+        await movie_feature.mark_stream_finished(group.get("now_playing"))
         queue = get_queue(chat_id)
         if len(queue) > 0:
             next_song = await queue.get()
@@ -392,6 +400,7 @@ async def skip_track(_, message: Message, lang):
                     raise Exception(status)
             set_group(chat_id, now_playing=next_song)
             await start_stream(next_song, lang)
+            await movie_feature.mark_stream_started(next_song)
             await delete_messages([message])
         else:
             set_group(chat_id, is_playing=False, now_playing=None)
@@ -512,6 +521,8 @@ async def show_queue(_, message: Message, lang):
 async def stop_stream(_, message: Message, lang):
     chat_id = message.chat.id
     try:
+        await movie_feature.mark_stream_finished(get_group(chat_id).get("now_playing"))
+        await movie_feature.mark_queue_cleared(list(get_queue(chat_id)._queue))
         set_group(chat_id, is_playing=False, now_playing=None)
         clear_queue(chat_id)
         await pytgcalls.leave_call(chat_id)
@@ -742,6 +753,7 @@ async def stream_end(_, update: Update, lang):
         if group["loop"]:
             await start_stream(group["now_playing"], lang)
         else:
+            await movie_feature.mark_stream_finished(group.get("now_playing"))
             queue = get_queue(chat_id)
             if len(queue) > 0:
                 next_song = await queue.get()
@@ -751,6 +763,7 @@ async def stream_end(_, update: Update, lang):
                         raise Exception(status)
                 set_group(chat_id, now_playing=next_song)
                 await start_stream(next_song, lang)
+                await movie_feature.mark_stream_started(next_song)
             else:
                 if safone.get(chat_id) is not None:
                     try:
@@ -779,6 +792,9 @@ async def closed_vc(_, update: Update):
         set_group(chat_id, now_playing=None, is_playing=False)
         clear_queue(chat_id)
 
+
+movie_feature = MovieFeature(client)
+movie_feature.register()
 
 client.start()
 pytgcalls.run()
