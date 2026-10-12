@@ -17,19 +17,20 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>
 """
 
 import os
-from config import config
-from core.song import Song
+
 from pyrogram import Client
-from yt_dlp import YoutubeDL
+from pyrogram.raw.functions.phone import CreateGroupCall
+from pyrogram.raw.types import InputPeerChannel
 from pytgcalls import PyTgCalls
+from pytgcalls.exceptions import NoActiveGroupCall
+from pytgcalls.types import AudioQuality, VideoQuality
+from pytgcalls.types.stream import MediaStream
+from yt_dlp import YoutubeDL
+
+from config import config
 from core.funcs import generate_cover
 from core.groups import get_group, set_title
-from pytgcalls.types.stream import MediaStream
-from pyrogram.raw.types import InputPeerChannel
-from pytgcalls.types import AudioQuality, VideoQuality
-from pyrogram.raw.functions.phone import CreateGroupCall
-from pytgcalls.exceptions import NoActiveGroupCall
-
+from core.song import Song
 
 safone = {}
 ydl_opts = {
@@ -48,7 +49,7 @@ ytdl = YoutubeDL(ydl_opts)
 pytgcalls = PyTgCalls(app)
 
 
-async def start_stream(song: Song, lang):
+async def start_stream(song: Song, lang, *, create_if_missing: bool = True):
     chat = song.request_msg.chat
     if safone.get(chat.id) is not None:
         try:
@@ -61,7 +62,9 @@ async def start_stream(song: Song, lang):
             chat.id,
             get_quality(song),
         )
-    except (NoActiveGroupCall):
+    except NoActiveGroupCall:
+        if not create_if_missing:
+            raise
         peer = await app.resolve_peer(chat.id)
         await app.invoke(
             CreateGroupCall(
@@ -72,7 +75,7 @@ async def start_stream(song: Song, lang):
                 random_id=app.rnd_id() // 9000000000,
             )
         )
-        return await start_stream(song, lang)
+        return await start_stream(song, lang, create_if_missing=create_if_missing)
     await set_title(chat.id, song.title, client=app)
     thumb = await generate_cover(
         song.title,
@@ -103,26 +106,45 @@ async def start_stream(song: Song, lang):
 
 def get_quality(song: Song) -> MediaStream:
     group = get_group(song.request_msg.chat.id)
-    if group["stream_mode"] == "video":
+    stream_mode = getattr(song, "stream_mode", None) or group["stream_mode"]
+    if stream_mode == "video":
+        movie_quality = str(getattr(song, "movie_quality", ""))
+        digits = "".join(
+            character for character in movie_quality if character.isdigit()
+        )
+        if digits:
+            resolution = int(digits)
+            if resolution <= 480:
+                video_quality = VideoQuality.SD_480p
+            elif resolution <= 720:
+                video_quality = VideoQuality.HD_720p
+            else:
+                video_quality = VideoQuality.FHD_1080p
+        elif config.QUALITY.lower() == "medium":
+            video_quality = VideoQuality.HD_720p
+        elif config.QUALITY.lower() == "low":
+            video_quality = VideoQuality.SD_480p
+        else:
+            video_quality = VideoQuality.FHD_1080p
         if config.QUALITY.lower() == "high":
             return MediaStream(
                 song.remote,
                 AudioQuality.HIGH,
-                VideoQuality.FHD_1080p,
+                video_quality,
                 headers=song.headers,
             )
         elif config.QUALITY.lower() == "medium":
             return MediaStream(
                 song.remote,
                 AudioQuality.MEDIUM,
-                VideoQuality.HD_720p,
+                video_quality,
                 headers=song.headers,
             )
         elif config.QUALITY.lower() == "low":
             return MediaStream(
                 song.remote,
                 AudioQuality.LOW,
-                VideoQuality.SD_480p,
+                video_quality,
                 headers=song.headers,
             )
         else:
@@ -130,7 +152,7 @@ def get_quality(song: Song) -> MediaStream:
             return MediaStream(
                 song.remote,
                 AudioQuality.HIGH,
-                VideoQuality.FHD_1080p,
+                video_quality,
                 headers=song.headers,
             )
     else:
