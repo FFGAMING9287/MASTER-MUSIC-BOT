@@ -108,7 +108,7 @@ $ sudo docker run musicplayer
 - `PREFIX`: Bot commad prefixes (separate multiple prefix with space). Eg: `! /`
 - `LANGUAGE`: An [available](#languages) bot language (can change it anytime). Default: `en`
 - `STREAM_MODE`: An stream mode like audio or video (can change it anytime). Default: `audio`
-- `MOVIE_ALLOWED_DOWNLOAD_HOSTS`: Comma-separated exact HTTPS hostnames authorized by the operator. Empty by default; movie downloads stay disabled until configured.
+- `MOVIE_ALLOWED_DOWNLOAD_HOSTS`: Optional comma-separated additional exact HTTPS hostnames authorized by the operator. The exact `movie-downloader-api.vercel.app` host used by movie search is built in.
 - `MOVIE_DOWNLOAD_DIR`: Temporary/cache directory for movie media. Default: `/tmp/master-music-bot/movies`.
 - `MOVIE_MAX_DOWNLOAD_MB`, `MOVIE_CACHE_TTL_HOURS`, `MOVIE_MAX_CONCURRENT_DOWNLOADS`: Download size cap, cache retention, and download concurrency settings. See [movie integration details](./MOVIE_INTEGRATION_README.md).
 - `ADMINS_ONLY`: Put `True` if you want to make /play commands only for admins. Default: `False`

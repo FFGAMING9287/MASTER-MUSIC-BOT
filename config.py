@@ -55,11 +55,12 @@ class Config:
         self.MOVIE_DOWNLOAD_DIR: str = os.environ.get(
             "MOVIE_DOWNLOAD_DIR", "/tmp/master-music-bot/movies"
         )
-        self.MOVIE_ALLOWED_DOWNLOAD_HOSTS: set = {
+        self.MOVIE_ALLOWED_DOWNLOAD_HOSTS: set = {"movie-downloader-api.vercel.app"}
+        self.MOVIE_ALLOWED_DOWNLOAD_HOSTS.update(
             host.strip().lower().rstrip(".")
             for host in os.environ.get("MOVIE_ALLOWED_DOWNLOAD_HOSTS", "").split(",")
             if host.strip()
-        }
+        )
         self.MOVIE_MAX_DOWNLOAD_MB: int = _positive_int_env(
             "MOVIE_MAX_DOWNLOAD_MB", 2048
         )
