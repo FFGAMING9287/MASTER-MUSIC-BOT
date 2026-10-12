@@ -9,16 +9,32 @@ from pyrogram import Client
 from yt_dlp import YoutubeDL
 
 # Compatible import for different pytgcalls versions
+PyTgCalls = None
+MediaStream = None
+AudioQuality = None
+VideoQuality = None
+
 try:
     from pytgcalls import PyTgCalls
 except ImportError:
     try:
         from pytgcalls.pytgcalls import PyTgCalls
     except ImportError:
-        from pytgcalls import GroupCallFactory as PyTgCalls  # very old fallback
+        PyTgCalls = None
 
-from pytgcalls.types.stream import MediaStream
-from pytgcalls.types import AudioQuality, VideoQuality
+try:
+    from pytgcalls.types.stream import MediaStream
+except ImportError:
+    try:
+        from pytgcalls.types import MediaStream
+    except ImportError:
+        MediaStream = None
+
+try:
+    from pytgcalls.types import AudioQuality, VideoQuality
+except ImportError:
+    AudioQuality = None
+    VideoQuality = None
 
 ydl_opts = {
     "quiet": True,
@@ -36,12 +52,13 @@ app = Client(
 
 ytdl = YoutubeDL(ydl_opts)
 
-try:
-    pytgcalls = PyTgCalls(app)
-except Exception as e:
-    print(f"PyTgCalls init warning: {e}")
-    pytgcalls = None
+pytgcalls = None
+if PyTgCalls is not None:
+    try:
+        pytgcalls = PyTgCalls(app)
+    except Exception as e:
+        print(f"PyTgCalls init warning: {e}")
 
 async def start_stream(song, lang=None):
-    """Placeholder - full stream logic to be restored from clean source."""
+    """Placeholder - full stream logic to be restored."""
     pass
