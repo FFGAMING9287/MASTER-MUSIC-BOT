@@ -1,23 +1,16 @@
 """
 Music Player, Telegram Voice Chat Bot
-Copyright (c) 2026-present ˹ꜰꜰɢᴀᴍɪɴɢ ꭙ ᴍᴜꜱɪᴄ ʙᴏᴛ !!
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>
+Copyright (c) 2026-present ˹ꜰꜰɢᴀᴍɪɴɢ ̽ ᴍᴜꜱɪᴄ ʙᴏᴛ !!
 """
 
 import json
+import os
 
+lang_dir = os.path.dirname(__file__)
 
-def load(lang):
-    return json.load(open(f"./lang/{lang}.json", "r"))
+def load_lang(code="en"):
+    path = os.path.join(lang_dir, f"{code}.json")
+    if not os.path.exists(path):
+        path = os.path.join(lang_dir, "en.json")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
