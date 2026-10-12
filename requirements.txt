@@ -1,9 +1,8 @@
 pyrogram==2.0.106
-tgcrypto
+tgcrypto==1.2.5
 pytgcalls==3.0.0.dev22
 yt-dlp
 python-dotenv
 aiohttp
 aiofiles
 spotipy
-PySocks
