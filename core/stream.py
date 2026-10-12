@@ -8,10 +8,14 @@ from config import config
 from pyrogram import Client
 from yt_dlp import YoutubeDL
 
+# Compatible import for different pytgcalls versions
 try:
     from pytgcalls import PyTgCalls
 except ImportError:
-    from py_tgcalls import PyTgCalls
+    try:
+        from pytgcalls.pytgcalls import PyTgCalls
+    except ImportError:
+        from pytgcalls import GroupCallFactory as PyTgCalls  # very old fallback
 
 from pytgcalls.types.stream import MediaStream
 from pytgcalls.types import AudioQuality, VideoQuality
@@ -26,13 +30,18 @@ app = Client(
     "MusicPlayerUB",
     api_id=config.API_ID,
     api_hash=config.API_HASH,
-    session_string=getattr(config, "SESSION", ""),
+    session_string=getattr(config, "SESSION", None) or "",
     in_memory=True,
 )
 
 ytdl = YoutubeDL(ydl_opts)
-pytgcalls = PyTgCalls(app)
+
+try:
+    pytgcalls = PyTgCalls(app)
+except Exception as e:
+    print(f"PyTgCalls init warning: {e}")
+    pytgcalls = None
 
 async def start_stream(song, lang=None):
-    """Basic start stream placeholder - full logic to be restored."""
+    """Placeholder - full stream logic to be restored from clean source."""
     pass
