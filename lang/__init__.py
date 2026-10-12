@@ -14,3 +14,6 @@ def load_lang(code="en"):
         path = os.path.join(lang_dir, "en.json")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+# Alias for compatibility with core/decorators.py
+load = load_lang
