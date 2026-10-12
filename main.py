@@ -1,6 +1,6 @@
 """
 Music Player, Telegram Voice Chat Bot
-Copyright (c) 2026-present ˹ꜰꜰɢᴀᴍɪɴɢ /* ᴍᴜꜱɪᴄ ʙᴏᴛ !!
+Copyright (c) 2026-present ˹ꜰꜰɢᴀᴍɪɴɢ ̽ ᴍᴜꜱɪᴄ ʙᴏᴛ !!
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published by
@@ -44,5 +44,11 @@ app = Client(
     bot_token=Config.BOT_TOKEN,
 )
 
-# NOTE: This is a partial restore. Full clean main.py from zip will be completed in next commits.
-print("Clean MusicPlayer main loaded")
+async def main():
+    await app.start()
+    LOGGER.info("Music Player started successfully")
+    await idle()
+    await app.stop()
+
+if __name__ == "__main__":
+    asyncio.get_event_loop().run_until_complete(main())
