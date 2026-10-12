@@ -29,11 +29,11 @@ The bot accepts only direct HTTPS media responses in supported video formats (MP
 
 ## Authorization and configuration
 
-The exact `movie-downloader-api.vercel.app` hostname used by the configured search API is allowed by default. The downloader revalidates every redirect host, requires public DNS addresses, and rejects unapproved hosts, non-HTTPS URLs, webpage responses, and files above the configured cap. Add only additional exact hostnames for sources you own or are authorized to use. A public search API or a `video/*` content type does not by itself establish permission to copy or stream a title.
+The exact `movie-downloader-api.vercel.app` hostname used by the configured search API and its observed media redirect hostname `bcdnw.hakunaymatata.com` are allowed by default. The downloader revalidates every redirect host, requires public DNS addresses, and rejects unapproved hosts, non-HTTPS URLs, webpage responses, and files above the configured cap. Add only additional exact hostnames for sources you own or are authorized to use. A public search API or a `video/*` content type does not by itself establish permission to copy or stream a title.
 
 Set these environment variables in `.env` or the deployment environment:
 
-- `MOVIE_ALLOWED_DOWNLOAD_HOSTS`: optional comma-separated additional exact hostnames, with no scheme/path or wildcard. `movie-downloader-api.vercel.app` is built in; add any other authorized redirect host separately if one is returned by the provider.
+- `MOVIE_ALLOWED_DOWNLOAD_HOSTS`: optional comma-separated additional exact hostnames, with no scheme/path or wildcard. `movie-downloader-api.vercel.app` and the observed redirect host `bcdnw.hakunaymatata.com` are built in; add any other authorized redirect host separately if one is returned by the provider.
 - `MOVIE_DOWNLOAD_DIR`: temporary/cache directory. Default: `/tmp/master-music-bot/movies` (ephemeral storage may be cleared on redeploy).
 - `MOVIE_MAX_DOWNLOAD_MB`: per-file size cap. Default: `2048`.
 - `MOVIE_CACHE_TTL_HOURS`: cache retention. Default: `24` hours. Expired files are removed on later downloads, while active and queued files are protected.
