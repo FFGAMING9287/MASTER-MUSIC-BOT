@@ -1,5 +1,5 @@
 """
-Stream helper - inject missing exception so py-tgcalls can load
+Stream helper - inject BOTH spellings of the missing exception
 """
 
 import os
@@ -7,19 +7,25 @@ import sys
 from config import config
 from pyrogram import Client
 
-# === Fix for missing GroupCallForbidden ===
-try:
-    from pyrogram.errors import GroupCallForbidden
-except ImportError:
-    # Create a dummy exception so py-tgcalls can import
-    class GroupCallForbidden(Exception):
-        pass
+# === Inject missing exceptions (both spellings) ===
+import pyrogram.errors as _pe
 
-    # Inject it into pyrogram.errors
-    import pyrogram.errors
-    pyrogram.errors.GroupCallForbidden = GroupCallForbidden
-    sys.modules["pyrogram.errors"].GroupCallForbidden = GroupCallForbidden
-# ==========================================
+class _DummyGroupCallForbidden(Exception):
+    """Dummy to satisfy py-tgcalls import"""
+    pass
+
+# Official name
+if not hasattr(_pe, "GroupCallForbidden"):
+    _pe.GroupCallForbidden = _DummyGroupCallForbidden
+
+# Exact name the error is complaining about (lowercase c)
+if not hasattr(_pe, "GroupcallForbidden"):
+    _pe.GroupcallForbidden = _DummyGroupCallForbidden
+
+# Also put them in the module dict so "from pyrogram.errors import ..." works
+sys.modules["pyrogram.errors"].GroupCallForbidden = _DummyGroupCallForbidden
+sys.modules["pyrogram.errors"].GroupcallForbidden = _DummyGroupCallForbidden
+# ==================================================
 
 _pytgcalls = None
 _app = None
@@ -51,7 +57,7 @@ def _lazy_init():
             in_memory=True,
         )
         _pytgcalls = PyTgCalls(_app)
-        print("PyTgCalls initialized with dummy GroupCallForbidden")
+        print("PyTgCalls initialized successfully")
         return True
     except Exception as e:
         _init_error = f"{type(e).__name__}: {e}"
