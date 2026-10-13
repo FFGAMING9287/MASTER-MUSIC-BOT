@@ -20,28 +20,34 @@ def _lazy_init():
         return False
 
     try:
-        try:
-            from pytgcalls import PyTgCalls
-        except ImportError:
-            from pytgcalls.pytgcalls import PyTgCalls
+        # Only try the main import path
+        from pytgcalls import PyTgCalls
+        print("Imported PyTgCalls from pytgcalls")
 
+        # Try MediaStream from different possible locations
         try:
             from pytgcalls.types.stream import MediaStream as MS
             _MediaStream = MS
+            print("MediaStream from types.stream")
         except ImportError:
             try:
                 from pytgcalls.types import MediaStream as MS
                 _MediaStream = MS
+                print("MediaStream from types")
             except ImportError:
-                _init_error = "MediaStream class not found in installed pytgcalls"
-                return False
+                # Last resort - some versions use different name
+                try:
+                    from pytgcalls import MediaStream as MS
+                    _MediaStream = MS
+                except ImportError:
+                    _init_error = "MediaStream not found. pytgcalls version may be incompatible."
+                    return False
 
         session = getattr(config, "SESSION", None) or ""
         if not session or len(str(session).strip()) < 40:
             _init_error = (
                 "SESSION variable is empty or invalid.\n"
-                "1. Generate a new session string\n"
-                "2. Add it in Railway → Variables → SESSION"
+                "Generate a new session string and add it in Railway Variables as SESSION."
             )
             return False
 
@@ -53,9 +59,13 @@ def _lazy_init():
             in_memory=True,
         )
         _pytgcalls = PyTgCalls(_app)
-        print("PyTgCalls initialized OK")
+        print("PyTgCalls object created successfully")
         return True
 
+    except ImportError as e:
+        _init_error = f"ImportError: {e}\nThe installed pytgcalls package is missing required classes."
+        print(_init_error)
+        return False
     except Exception as e:
         _init_error = f"{type(e).__name__}: {e}"
         print(f"PyTgCalls init error: {_init_error}")
@@ -66,7 +76,7 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video"):
         return False, "File not found on server"
 
     if not _lazy_init():
-        return False, _init_error or "PyTgCalls failed to start. Check SESSION."
+        return False, _init_error or "PyTgCalls failed to start."
 
     try:
         if not _app.is_connected:
@@ -77,6 +87,7 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video"):
         try:
             await _pytgcalls.play(chat_id, stream)
         except AttributeError:
+            # Fallback for older API
             await _pytgcalls.join_group_call(chat_id, stream)
 
         return True, f"Now playing **{title}** in Voice Chat"
@@ -88,13 +99,13 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video"):
         if "no active group call" in err or "not in a call" in err:
             return False, "No active Voice Chat. Start a Voice Chat in the group first."
         if "session" in err or "auth key" in err or "unauthorized" in err:
-            return False, "SESSION is invalid/expired. Generate a new session string."
+            return False, "SESSION is invalid or expired. Generate a new one."
         if "flood" in err:
             return False, "Flood wait from Telegram. Try again later."
 
         return False, f"Play error: {str(e)[:200]}"
 
-# Compatibility exports
+# Compatibility
 pytgcalls = None
 app = None
 
