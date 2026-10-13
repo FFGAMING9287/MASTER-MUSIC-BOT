@@ -1,9 +1,9 @@
-pyrogram==2.0.106
-py-tgcalls
 yt-dlp
-python-dotenv
+pillow
 aiohttp
 aiofiles
-spotipy
-Pillow
+python-dotenv
 youtube-search-python
+httpx
+py-tgcalls==2.2.10
+https://github.com/PyrogramMod/PyrogramMod/archive/refs/heads/main.zip

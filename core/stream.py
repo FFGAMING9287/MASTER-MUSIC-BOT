@@ -1,112 +1,79 @@
 """
-Stream helper - inject all missing GroupCall exceptions
+Stream helper based on original MusicPlayer working code
+Uses py-tgcalls 2.2.10 + PyrogramMod
 """
 
 import os
-import sys
 from config import config
 from pyrogram import Client
+from yt_dlp import YoutubeDL
+from pytgcalls import PyTgCalls
+from pytgcalls.types.stream import MediaStream
+from pytgcalls.types import AudioQuality, VideoQuality
+from pytgcalls.exceptions import NoActiveGroupCall
+from pyrogram.raw.types import InputPeerChannel
+from pyrogram.raw.functions.phone import CreateGroupCall
 
-# === Inject ALL missing GroupCall exceptions ===
-import pyrogram.errors as _pe
+ydl_opts = {
+    "quiet": True,
+    "geo_bypass": True,
+    "nocheckcertificate": True,
+}
 
-class _Dummy(Exception):
-    pass
+app = Client(
+    "MusicPlayerUB",
+    api_id=config.API_ID,
+    api_hash=config.API_HASH,
+    session_string=getattr(config, "SESSION", "") or "",
+    in_memory=True,
+)
+ytdl = YoutubeDL(ydl_opts)
+pytgcalls = PyTgCalls(app)
 
-# Every name the library might try to import
-_missing = [
-    "GroupCallForbidden",
-    "GroupcallForbidden",
-    "GroupCallInvalid",
-    "GroupcallInvalid",
-    "GroupCallNotFound",
-    "GroupcallNotFound",
-    "GroupCallAlreadyStarted",
-    "GroupcallAlreadyStarted",
-    "ParticipantJoinMissing",
-    "ParticipantJoinMissing",
-    "GroupCallSsrcDuplicate",
-    "GroupcallSsrcDuplicate",
-    "JoinAsPeerInvalid",
-    "GroupCallDiscarded",
-    "GroupcallDiscarded",
-]
-
-for name in _missing:
-    if not hasattr(_pe, name):
-        setattr(_pe, name, type(name, (Exception,), {}))
-    # Also force into the module
-    setattr(sys.modules["pyrogram.errors"], name, getattr(_pe, name))
-# ===============================================
-
-_pytgcalls = None
-_app = None
-_init_error = "VC play not available"
-
-def _lazy_init():
-    global _pytgcalls, _app, _init_error
-
-    if _pytgcalls is not None:
-        return True
-
-    try:
-        from pytgcalls import PyTgCalls
-    except Exception as e:
-        _init_error = f"PyTgCalls import failed: {e}"
-        return False
-
-    session = getattr(config, "SESSION", None) or ""
-    if not session or len(str(session).strip()) < 40:
-        _init_error = "SESSION missing or invalid"
-        return False
-
-    try:
-        _app = Client(
-            "MusicPlayerUB",
-            api_id=int(config.API_ID),
-            api_hash=str(config.API_HASH),
-            session_string=str(session).strip(),
-            in_memory=True,
-        )
-        _pytgcalls = PyTgCalls(_app)
-        print("PyTgCalls initialized OK")
-        return True
-    except Exception as e:
-        _init_error = f"{type(e).__name__}: {e}"
-        return False
 
 async def play_local_file(chat_id: int, file_path: str, title: str = "Video"):
+    """Play a local downloaded file in Voice Chat (original style)."""
     if not os.path.exists(file_path):
         return False, "File not found"
 
-    if not _lazy_init():
-        return False, f"Auto-play unavailable.\n({_init_error})\n\nFile is still downloaded."
-
     try:
-        if not _app.is_connected:
-            await _app.start()
-
-        try:
-            await _pytgcalls.play(chat_id, file_path)
-        except Exception:
-            try:
-                from pytgcalls.types import MediaStream
-                await _pytgcalls.play(chat_id, MediaStream(file_path))
-            except Exception:
-                await _pytgcalls.join_group_call(chat_id, file_path)
-
+        stream = MediaStream(
+            file_path,
+            AudioQuality.HIGH,
+            VideoQuality.HD_720p,
+        )
+        await pytgcalls.play(chat_id, stream)
         return True, f"Now playing **{title}** in Voice Chat"
-
+    except NoActiveGroupCall:
+        # Try to create the group call
+        try:
+            peer = await app.resolve_peer(chat_id)
+            await app.invoke(
+                CreateGroupCall(
+                    peer=InputPeerChannel(
+                        channel_id=peer.channel_id,
+                        access_hash=peer.access_hash,
+                    ),
+                    random_id=app.rnd_id() // 9000000000,
+                )
+            )
+            # Retry play
+            stream = MediaStream(
+                file_path,
+                AudioQuality.HIGH,
+                VideoQuality.HD_720p,
+            )
+            await pytgcalls.play(chat_id, stream)
+            return True, f"Created VC + now playing **{title}**"
+        except Exception as e2:
+            return False, f"No active Voice Chat and could not create one: {e2}"
     except Exception as e:
         err = str(e).lower()
-        if "no active" in err or "group call" in err:
-            return False, "No active Voice Chat. Start one first."
         if "session" in err or "auth" in err:
-            return False, "SESSION invalid"
-        return False, f"Play failed: {str(e)[:150]}"
+            return False, "SESSION invalid or missing"
+        return False, f"Play error: {str(e)[:180]}"
 
-pytgcalls = None
-app = None
 
 async def start_stream(song, lang=None):
+    """Compatibility placeholder"""
     pass

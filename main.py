@@ -1,6 +1,6 @@
 """
 Music Player + Movie + Adult Bot
-Download works. Auto-play in VC disabled for stability.
+With VC play restored from original stack
 """
 
 import asyncio
@@ -10,8 +10,8 @@ from config import config
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram import Client, filters
 from core.decorators import register, handle_error
-from core.groups import get_group, set_group, set_default
 from movie_api import search_movie, search_adult, download_file
+from core.stream import play_local_file
 
 movie_cache = {}
 adult_cache = {}
@@ -24,7 +24,8 @@ if getattr(config, "BOT_TOKEN", None):
     bot = Client("MusicPlayer", api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN, in_memory=True)
     client = bot
 else:
-    client = Client("MusicPlayer", api_id=config.API_ID, api_hash=config.API_HASH, in_memory=True)
+    from core.stream import app
+    client = app
 
 PREFIXES = getattr(config, "PREFIXES", ["!", "/", "."])
 
@@ -227,11 +228,13 @@ async def movie_callback(_, callback: CallbackQuery):
         return
 
     size = os.path.getsize(local_path) / (1024*1024)
-    await status.edit_text(
-        f"✅ **Downloaded successfully!**\n\n"
-        f"📁 `{os.path.basename(local_path)}`\n"
-        f"📦 {size:.1f} MB"
-    )
+    await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n▶️ Playing in Voice Chat...")
+
+    success, msg = await play_local_file(chat_id, local_path, f"{title} S{season}E{episode}")
+    if success:
+        await status.edit_text(f"✅ Downloaded + Playing!\n📁 {os.path.basename(local_path)}\n📦 {size:.1f} MB\n\n{msg}")
+    else:
+        await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n❌ Play failed: {msg}")
 
 @client.on_callback_query(filters.regex(r"^ad\|"))
 @handle_error
@@ -267,12 +270,14 @@ async def adult_callback(_, callback: CallbackQuery):
         return
 
     size = os.path.getsize(local_path) / (1024*1024)
-    await status.edit_text(
-        f"✅ **Downloaded successfully!**\n\n"
-        f"📁 `{os.path.basename(local_path)}`\n"
-        f"📦 {size:.1f} MB"
-    )
+    await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n▶️ Playing in Voice Chat...")
 
-print("Music + Movie + Adult bot loaded (download only)")
+    success, msg = await play_local_file(chat_id, local_path, title[:40])
+    if success:
+        await status.edit_text(f"✅ Downloaded + Playing!\n📁 {os.path.basename(local_path)}\n📦 {size:.1f} MB\n\n{msg}")
+    else:
+        await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n❌ Play failed: {msg}")
+
+print("Music + Movie + Adult + VC Play (original stack) loaded")
 if __name__ == "__main__":
     client.run()
