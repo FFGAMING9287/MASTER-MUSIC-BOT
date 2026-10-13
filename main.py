@@ -7,7 +7,6 @@ With Movie Integration
 import asyncio
 asyncio.set_event_loop(asyncio.new_event_loop())
 import os
-import json
 from config import config
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram import Client, filters
@@ -79,7 +78,6 @@ def build_movie_keyboard(data, page=0):
     episodes = result.get("episodes", [])
     buttons = []
 
-    # Show up to 8 episode+quality combinations
     count = 0
     for ep in episodes:
         if count >= 8:
@@ -87,9 +85,12 @@ def build_movie_keyboard(data, page=0):
         for q in ep.get("qualities", [])[:2]:
             if count >= 8:
                 break
-            label = f"▶ {result.get('title','')} S{ep.get('season',1)}E{ep['episode']} {ep.get('language','')} {q['quality']}"
-            cb_data = f"mv|{result.get('id','x')}|{ep.get('season',1)}|{ep['episode']}|{ep.get('language','ja')}|{q['quality']}"
-            buttons.append([InlineKeyboardButton(label[:60], callback_data=cb_data[:64])])
+            lang = ep.get("language", "Unknown")
+            label = f"▶ {result.get('title','')} S{ep.get('season',1)}E{ep['episode']} {lang} {q['quality']}"
+            # Use short language code in callback to stay under 64 bytes
+            short_lang = lang[:3].lower() if lang else "unk"
+            cb_data = f"mv|{result.get('id','x')}|{ep.get('season',1)}|{ep['episode']}|{short_lang}|{q['quality']}"
+            buttons.append([InlineKeyboardButton(label[:58], callback_data=cb_data[:64])])
             count += 1
 
     if len(episodes) > 4:
@@ -180,7 +181,6 @@ async def play_cmd(_, message: Message):
 
     status = await message.reply_text("🔍 Searching...")
 
-    # First try movie search
     data = await search_movie(query)
 
     if data and data.get("results"):
@@ -198,7 +198,6 @@ async def play_cmd(_, message: Message):
         await status.edit_text(text, reply_markup=keyboard)
         return
 
-    # Fallback message (music search will be restored later)
     await status.edit_text(
         f"🔍 No movie found for **{query}**.\n\n"
         "Music search is being restored. For now use `/movie <name>` for movies."
@@ -213,7 +212,7 @@ async def movie_callback(_, callback: CallbackQuery):
         await callback.answer("Invalid data")
         return
 
-    _, movie_id, season, episode, language, quality = data_parts
+    _, movie_id, season, episode, short_lang, quality = data_parts
     await callback.answer(f"Downloading S{season}E{episode} {quality}...")
 
     chat_id = callback.message.chat.id
@@ -224,40 +223,70 @@ async def movie_callback(_, callback: CallbackQuery):
 
     download_url = None
     title = "Unknown"
+    matched_lang = short_lang
+
     for res in cached.get("results", []):
         title = res.get("title", "Unknown")
         for ep in res.get("episodes", []):
-            if str(ep.get("episode")) == episode and str(ep.get("season", 1)) == season:
-                if ep.get("language", "").lower() == language.lower() or language == "ja":
+            if str(ep.get("episode")) == str(episode) and str(ep.get("season", 1)) == str(season):
+                ep_lang = (ep.get("language") or "").lower()
+                # Match if short_lang is prefix of full language or exact
+                if short_lang in ep_lang or ep_lang.startswith(short_lang) or short_lang == "unk":
                     for q in ep.get("qualities", []):
                         if q.get("quality") == quality:
                             download_url = q.get("download_url") or q.get("downloadUrl")
+                            matched_lang = ep.get("language", short_lang)
                             break
                 if download_url:
                     break
         if download_url:
             break
 
+    # Fallback: ignore language and match only season+episode+quality
     if not download_url:
-        await callback.message.reply_text("❌ Download link not found.")
+        for res in cached.get("results", []):
+            title = res.get("title", "Unknown")
+            for ep in res.get("episodes", []):
+                if str(ep.get("episode")) == str(episode) and str(ep.get("season", 1)) == str(season):
+                    for q in ep.get("qualities", []):
+                        if q.get("quality") == quality:
+                            download_url = q.get("download_url") or q.get("downloadUrl")
+                            matched_lang = ep.get("language", "Unknown")
+                            break
+                    if download_url:
+                        break
+            if download_url:
+                break
+
+    if not download_url:
+        await callback.message.reply_text("❌ Download link not found in cache. Try searching again.")
         return
 
     status_msg = await callback.message.reply_text(
         f"⬇️ **Downloading in background...**\n\n"
-        f"{title} S{season}E{episode} ({quality})\nPlease wait..."
+        f"**{title}** S{season}E{episode} ({matched_lang} {quality})\nPlease wait, this may take 1-3 minutes..."
     )
 
     filename = f"{title.replace(' ', '_')}_s{season}e{episode}_{quality}.mp4"
     local_path = await download_movie(download_url, filename)
 
     if local_path:
+        size_mb = os.path.getsize(local_path) / (1024 * 1024)
         await status_msg.edit_text(
             f"✅ **Downloaded successfully!**\n\n"
-            f"📁 `{filename}`\n\n"
-            f"Now join a Voice Chat and the bot will play it (VC play integration next)."
+            f"📁 `{os.path.basename(local_path)}`\n"
+            f"📦 Size: {size_mb:.1f} MB\n\n"
+            f"Join a Voice Chat. Full auto-play in VC is next."
         )
     else:
-        await status_msg.edit_text("❌ Download failed. Please try another quality.")
+        await status_msg.edit_text(
+            "❌ **Download failed.**\n\n"
+            "Possible reasons:\n"
+            "• Server temporary issue\n"
+            "• Link expired\n"
+            "• File too large / timeout\n\n"
+            "Try another quality or episode."
+        )
 
 
 print("Music Player + Movie integration loaded successfully")
