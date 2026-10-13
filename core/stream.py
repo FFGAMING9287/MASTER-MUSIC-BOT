@@ -1,10 +1,25 @@
 """
-Stream helper - VC play is optional. Download always works.
+Stream helper - inject missing exception so py-tgcalls can load
 """
 
 import os
+import sys
 from config import config
 from pyrogram import Client
+
+# === Fix for missing GroupCallForbidden ===
+try:
+    from pyrogram.errors import GroupCallForbidden
+except ImportError:
+    # Create a dummy exception so py-tgcalls can import
+    class GroupCallForbidden(Exception):
+        pass
+
+    # Inject it into pyrogram.errors
+    import pyrogram.errors
+    pyrogram.errors.GroupCallForbidden = GroupCallForbidden
+    sys.modules["pyrogram.errors"].GroupCallForbidden = GroupCallForbidden
+# ==========================================
 
 _pytgcalls = None
 _app = None
@@ -36,6 +51,7 @@ def _lazy_init():
             in_memory=True,
         )
         _pytgcalls = PyTgCalls(_app)
+        print("PyTgCalls initialized with dummy GroupCallForbidden")
         return True
     except Exception as e:
         _init_error = f"{type(e).__name__}: {e}"
@@ -46,7 +62,7 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video"):
         return False, "File not found"
 
     if not _lazy_init():
-        return False, f"Auto-play unavailable.\n({_init_error})\n\nFile is still downloaded successfully."
+        return False, f"Auto-play unavailable.\n({_init_error})\n\nFile is still downloaded."
 
     try:
         if not _app.is_connected:
