@@ -1,5 +1,5 @@
 """
-Music Player + Movie + Adult Bot
+Music Player + Movie + Adult Bot with VC Play
 """
 
 import asyncio
@@ -11,13 +11,13 @@ from pyrogram import Client, filters
 from core.decorators import register, handle_error
 from core.groups import get_group, set_group, set_default
 from movie_api import search_movie, search_adult, download_file
+from core.stream import play_local_file
 
 try:
-    from core.stream import app, pytgcalls, start_stream
+    from core.stream import app, pytgcalls
 except Exception:
     app = None
     pytgcalls = None
-    async def start_stream(*a, **k): pass
 
 movie_cache = {}
 adult_cache = {}
@@ -86,7 +86,7 @@ async def start(_, message: Message):
         f"Hello {name}!\n\n**FFGAMING X MUSIC BOT**\n\n"
         "/play <name> - Movie/Series\n"
         "/movie <name> - Movie search\n"
-        "/adult <name> or /xxx <name> - Adult content\n"
+        "/adult or /xxx <query> - Adult content\n"
         "/help /ping"
     )
 
@@ -97,8 +97,9 @@ async def help_cmd(_, message: Message):
         "**Commands**\n"
         "/play <name> - Search movie/series\n"
         "/movie <name> - Movie search\n"
-        "/adult <query> or /xxx <query> - Adult videos\n"
-        "/ping\n/start"
+        "/adult or /xxx <query> - Adult videos\n"
+        "/ping\n/start\n\n"
+        "After download the bot will try to play in Voice Chat automatically."
     )
 
 @client.on_message(filters.command("ping", PREFIXES) & ~filters.bot)
@@ -148,7 +149,7 @@ async def play_cmd(_, message: Message):
 async def adult_cmd(_, message: Message):
     query = extract_args(message.text)
     if not query:
-        await message.reply_text("Usage: /adult <query>\nExample: /adult japanese")
+        await message.reply_text("Usage: /adult <query> or /xxx <query>")
         return
     status = await message.reply_text("🔍 Searching adult content...")
     data = await search_adult(query)
@@ -199,7 +200,7 @@ async def movie_callback(_, callback: CallbackQuery):
         await callback.answer("Invalid")
         return
     _, mid, season, episode, short_lang, quality = parts
-    await callback.answer(f"Downloading S{season}E{episode} {quality}...")
+    await callback.answer(f"Downloading S{season}E{episode}...")
     chat_id = callback.message.chat.id
     cached = movie_cache.get(chat_id)
     if not cached:
@@ -223,14 +224,23 @@ async def movie_callback(_, callback: CallbackQuery):
     if not download_url:
         await callback.message.reply_text("❌ Link not found.")
         return
+
     status = await callback.message.reply_text(f"⬇️ Downloading **{title}** S{season}E{episode} ({quality})...")
     filename = f"{title.replace(' ','_')}_s{season}e{episode}_{quality}.mp4"
     local_path, info = await download_file(download_url, filename)
-    if local_path:
-        size = os.path.getsize(local_path) / (1024*1024)
-        await status.edit_text(f"✅ Downloaded!\n📁 `{os.path.basename(local_path)}`\n📦 {size:.1f} MB")
-    else:
+
+    if not local_path:
         await status.edit_text(f"❌ Download failed.\nReason: {info}")
+        return
+
+    size = os.path.getsize(local_path) / (1024*1024)
+    await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n▶️ Trying to play in Voice Chat...")
+
+    success, msg = await play_local_file(chat_id, local_path, f"{title} S{season}E{episode}")
+    if success:
+        await status.edit_text(f"✅ Downloaded + Playing in VC!\n📁 {os.path.basename(local_path)}\n📦 {size:.1f} MB\n\n{msg}")
+    else:
+        await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n❌ Could not auto-play:\n{msg}\n\nMake sure a Voice Chat is active in the group.")
 
 @client.on_callback_query(filters.regex(r"^ad\|"))
 @handle_error
@@ -244,8 +254,9 @@ async def adult_callback(_, callback: CallbackQuery):
     chat_id = callback.message.chat.id
     cached = adult_cache.get(chat_id)
     if not cached or idx >= len(cached["items"]):
-        await callback.answer("Expired or invalid")
+        await callback.answer("Expired")
         return
+
     item = cached["items"][idx]
     title = item.get("title", "Video")
     quality = item.get("quality", "?")
@@ -253,16 +264,26 @@ async def adult_callback(_, callback: CallbackQuery):
     if not download_url:
         await callback.message.reply_text("❌ No download link.")
         return
+
     await callback.answer(f"Downloading {quality}...")
     status = await callback.message.reply_text(f"⬇️ Downloading:\n**{title[:60]}**\nQuality: {quality}")
+
     filename = f"adult_{idx}_{quality}.mp4"
     local_path, info = await download_file(download_url, filename)
-    if local_path:
-        size = os.path.getsize(local_path) / (1024*1024)
-        await status.edit_text(f"✅ Downloaded!\n📁 `{os.path.basename(local_path)}`\n📦 {size:.1f} MB\n\nJoin VC to play (auto-play coming soon).")
-    else:
-        await status.edit_text(f"❌ Download failed.\nReason: {info}\n\nYou can try opening the link manually if needed.")
 
-print("Music + Movie + Adult bot loaded")
+    if not local_path:
+        await status.edit_text(f"❌ Download failed.\nReason: {info}")
+        return
+
+    size = os.path.getsize(local_path) / (1024*1024)
+    await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n▶️ Trying to play in Voice Chat...")
+
+    success, msg = await play_local_file(chat_id, local_path, title[:40])
+    if success:
+        await status.edit_text(f"✅ Downloaded + Playing in VC!\n📁 {os.path.basename(local_path)}\n📦 {size:.1f} MB\n\n{msg}")
+    else:
+        await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n❌ Could not auto-play:\n{msg}\n\nStart a Voice Chat in the group first, then try again.")
+
+print("Music + Movie + Adult + VC Play loaded")
 if __name__ == "__main__":
     client.run()
