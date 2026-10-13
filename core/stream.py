@@ -1,6 +1,5 @@
 """
 Stream helper based on original MusicPlayer working code
-Uses py-tgcalls 2.2.10 + PyrogramMod
 """
 
 import os
@@ -30,13 +29,24 @@ app = Client(
 ytdl = YoutubeDL(ydl_opts)
 pytgcalls = PyTgCalls(app)
 
+_started = False
+
+async def _ensure_started():
+    global _started
+    if not _started:
+        if not app.is_connected:
+            await app.start()
+        await pytgcalls.start()
+        _started = True
+        print("PyTgCalls + userbot started")
 
 async def play_local_file(chat_id: int, file_path: str, title: str = "Video"):
-    """Play a local downloaded file in Voice Chat (original style)."""
     if not os.path.exists(file_path):
         return False, "File not found"
 
     try:
+        await _ensure_started()
+
         stream = MediaStream(
             file_path,
             AudioQuality.HIGH,
@@ -45,7 +55,6 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video"):
         await pytgcalls.play(chat_id, stream)
         return True, f"Now playing **{title}** in Voice Chat"
     except NoActiveGroupCall:
-        # Try to create the group call
         try:
             peer = await app.resolve_peer(chat_id)
             await app.invoke(
@@ -57,7 +66,6 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video"):
                     random_id=app.rnd_id() // 9000000000,
                 )
             )
-            # Retry play
             stream = MediaStream(
                 file_path,
                 AudioQuality.HIGH,
@@ -73,7 +81,5 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video"):
             return False, "SESSION invalid or missing"
         return False, f"Play error: {str(e)[:180]}"
 
-
 async def start_stream(song, lang=None):
-    """Compatibility placeholder"""
     pass
