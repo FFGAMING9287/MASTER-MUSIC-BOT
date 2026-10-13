@@ -1,5 +1,5 @@
 """
-Stream helper - inject BOTH spellings of the missing exception
+Stream helper - inject all missing GroupCall exceptions
 """
 
 import os
@@ -7,25 +7,37 @@ import sys
 from config import config
 from pyrogram import Client
 
-# === Inject missing exceptions (both spellings) ===
+# === Inject ALL missing GroupCall exceptions ===
 import pyrogram.errors as _pe
 
-class _DummyGroupCallForbidden(Exception):
-    """Dummy to satisfy py-tgcalls import"""
+class _Dummy(Exception):
     pass
 
-# Official name
-if not hasattr(_pe, "GroupCallForbidden"):
-    _pe.GroupCallForbidden = _DummyGroupCallForbidden
+# Every name the library might try to import
+_missing = [
+    "GroupCallForbidden",
+    "GroupcallForbidden",
+    "GroupCallInvalid",
+    "GroupcallInvalid",
+    "GroupCallNotFound",
+    "GroupcallNotFound",
+    "GroupCallAlreadyStarted",
+    "GroupcallAlreadyStarted",
+    "ParticipantJoinMissing",
+    "ParticipantJoinMissing",
+    "GroupCallSsrcDuplicate",
+    "GroupcallSsrcDuplicate",
+    "JoinAsPeerInvalid",
+    "GroupCallDiscarded",
+    "GroupcallDiscarded",
+]
 
-# Exact name the error is complaining about (lowercase c)
-if not hasattr(_pe, "GroupcallForbidden"):
-    _pe.GroupcallForbidden = _DummyGroupCallForbidden
-
-# Also put them in the module dict so "from pyrogram.errors import ..." works
-sys.modules["pyrogram.errors"].GroupCallForbidden = _DummyGroupCallForbidden
-sys.modules["pyrogram.errors"].GroupcallForbidden = _DummyGroupCallForbidden
-# ==================================================
+for name in _missing:
+    if not hasattr(_pe, name):
+        setattr(_pe, name, type(name, (Exception,), {}))
+    # Also force into the module
+    setattr(sys.modules["pyrogram.errors"], name, getattr(_pe, name))
+# ===============================================
 
 _pytgcalls = None
 _app = None
@@ -57,7 +69,7 @@ def _lazy_init():
             in_memory=True,
         )
         _pytgcalls = PyTgCalls(_app)
-        print("PyTgCalls initialized successfully")
+        print("PyTgCalls initialized OK")
         return True
     except Exception as e:
         _init_error = f"{type(e).__name__}: {e}"
