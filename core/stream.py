@@ -1,5 +1,6 @@
 """
 Stream helper for playing local files in Voice Chat
+Uses modern py-tgcalls package
 """
 
 import os
@@ -8,11 +9,10 @@ from pyrogram import Client
 
 _pytgcalls = None
 _app = None
-_MediaStream = None
 _init_error = None
 
 def _lazy_init():
-    global _pytgcalls, _app, _MediaStream, _init_error
+    global _pytgcalls, _app, _init_error
 
     if _pytgcalls is not None:
         return True
@@ -20,35 +20,12 @@ def _lazy_init():
         return False
 
     try:
-        # Only try the main import path
         from pytgcalls import PyTgCalls
-        print("Imported PyTgCalls from pytgcalls")
-
-        # Try MediaStream from different possible locations
-        try:
-            from pytgcalls.types.stream import MediaStream as MS
-            _MediaStream = MS
-            print("MediaStream from types.stream")
-        except ImportError:
-            try:
-                from pytgcalls.types import MediaStream as MS
-                _MediaStream = MS
-                print("MediaStream from types")
-            except ImportError:
-                # Last resort - some versions use different name
-                try:
-                    from pytgcalls import MediaStream as MS
-                    _MediaStream = MS
-                except ImportError:
-                    _init_error = "MediaStream not found. pytgcalls version may be incompatible."
-                    return False
+        print("PyTgCalls imported successfully")
 
         session = getattr(config, "SESSION", None) or ""
         if not session or len(str(session).strip()) < 40:
-            _init_error = (
-                "SESSION variable is empty or invalid.\n"
-                "Generate a new session string and add it in Railway Variables as SESSION."
-            )
+            _init_error = "SESSION is empty/invalid. Add a valid session string in Railway Variables."
             return False
 
         _app = Client(
@@ -59,36 +36,31 @@ def _lazy_init():
             in_memory=True,
         )
         _pytgcalls = PyTgCalls(_app)
-        print("PyTgCalls object created successfully")
+        print("PyTgCalls instance created")
         return True
 
     except ImportError as e:
-        _init_error = f"ImportError: {e}\nThe installed pytgcalls package is missing required classes."
+        _init_error = f"ImportError: {e}"
         print(_init_error)
         return False
     except Exception as e:
         _init_error = f"{type(e).__name__}: {e}"
-        print(f"PyTgCalls init error: {_init_error}")
+        print(f"Init error: {_init_error}")
         return False
 
 async def play_local_file(chat_id: int, file_path: str, title: str = "Video"):
     if not os.path.exists(file_path):
-        return False, "File not found on server"
+        return False, "File not found"
 
     if not _lazy_init():
-        return False, _init_error or "PyTgCalls failed to start."
+        return False, _init_error or "PyTgCalls failed"
 
     try:
         if not _app.is_connected:
             await _app.start()
 
-        stream = _MediaStream(file_path)
-
-        try:
-            await _pytgcalls.play(chat_id, stream)
-        except AttributeError:
-            # Fallback for older API
-            await _pytgcalls.join_group_call(chat_id, stream)
+        # Modern py-tgcalls play method accepts file path directly
+        await _pytgcalls.play(chat_id, file_path)
 
         return True, f"Now playing **{title}** in Voice Chat"
 
@@ -96,16 +68,15 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video"):
         err = str(e).lower()
         print(f"play error: {e}")
 
-        if "no active group call" in err or "not in a call" in err:
+        if "no active group call" in err or "not in a call" in err or "no group call" in err:
             return False, "No active Voice Chat. Start a Voice Chat in the group first."
-        if "session" in err or "auth key" in err or "unauthorized" in err:
-            return False, "SESSION is invalid or expired. Generate a new one."
+        if "session" in err or "auth" in err or "unauthorized" in err:
+            return False, "SESSION invalid/expired. Generate a new one."
         if "flood" in err:
-            return False, "Flood wait from Telegram. Try again later."
+            return False, "Flood wait. Try later."
 
         return False, f"Play error: {str(e)[:200]}"
 
-# Compatibility
 pytgcalls = None
 app = None
 
