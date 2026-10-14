@@ -1,5 +1,5 @@
 """
-Stream helper - play / pause / resume / skip / queue
+Stream helper - play / pause / resume / skip / stop / queue
 """
 
 import os
@@ -31,8 +31,6 @@ pytgcalls = PyTgCalls(app)
 
 _started = False
 
-# Per-chat state
-# chat_id -> {"playing": bool, "paused": bool, "title": str, "path": str, "queue": [{"path","title"}]}
 chat_state = {}
 
 def get_state(chat_id):
@@ -55,14 +53,36 @@ async def _ensure_started():
         _started = True
         print("PyTgCalls + userbot started")
 
+async def _leave_call(chat_id: int):
+    """Try every known method to leave / stop the stream."""
+    await _ensure_started()
+    methods = [
+        "leave_group_call",
+        "leave_call",
+        "stop",
+        "hangup",
+    ]
+    for name in methods:
+        try:
+            fn = getattr(pytgcalls, name, None)
+            if fn:
+                await fn(chat_id)
+                return True
+        except Exception:
+            continue
+    # Last resort: play nothing / empty
+    try:
+        await pytgcalls.play(chat_id, None)
+    except Exception:
+        pass
+    return False
+
 async def play_local_file(chat_id: int, file_path: str, title: str = "Video", force=False):
-    """Play file. If already playing and not force, add to queue."""
     if not os.path.exists(file_path):
         return False, "File not found"
 
     state = get_state(chat_id)
 
-    # If something is playing and not forcing, queue it
     if state["playing"] and not force:
         state["queue"].append({"path": file_path, "title": title})
         pos = len(state["queue"])
@@ -70,8 +90,6 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video", fo
 
     try:
         await _ensure_started()
-
-        # Prefer natural aspect - use medium quality to reduce stretch
         stream = MediaStream(
             file_path,
             AudioQuality.HIGH,
@@ -122,16 +140,14 @@ async def pause_stream(chat_id: int):
         return False, "Already paused"
     try:
         await _ensure_started()
-        await pytgcalls.pause_stream(chat_id)
+        try:
+            await pytgcalls.pause_stream(chat_id)
+        except Exception:
+            await pytgcalls.pause(chat_id)
         state["paused"] = True
         return True, f"⏸ Paused: **{state['title']}**"
     except Exception as e:
-        try:
-            await pytgcalls.pause(chat_id)
-            state["paused"] = True
-            return True, f"⏸ Paused: **{state['title']}**"
-        except Exception as e2:
-            return False, f"Pause failed: {str(e2)[:120]}"
+        return False, f"Pause failed: {str(e)[:120]}"
 
 async def resume_stream(chat_id: int):
     state = get_state(chat_id)
@@ -141,38 +157,27 @@ async def resume_stream(chat_id: int):
         return False, "Not paused"
     try:
         await _ensure_started()
-        await pytgcalls.resume_stream(chat_id)
+        try:
+            await pytgcalls.resume_stream(chat_id)
+        except Exception:
+            await pytgcalls.resume(chat_id)
         state["paused"] = False
         return True, f"▶️ Resumed: **{state['title']}**"
     except Exception as e:
-        try:
-            await pytgcalls.resume(chat_id)
-            state["paused"] = False
-            return True, f"▶️ Resumed: **{state['title']}**"
-        except Exception as e2:
-            return False, f"Resume failed: {str(e2)[:120]}"
+        return False, f"Resume failed: {str(e)[:120]}"
 
 async def skip_stream(chat_id: int):
     state = get_state(chat_id)
     if not state["playing"] and not state["queue"]:
         return False, "Nothing is playing and queue is empty"
 
-    # Stop current
-    try:
-        await _ensure_started()
-        try:
-            await pytgcalls.leave_group_call(chat_id)
-        except Exception:
-            pass
-    except Exception:
-        pass
+    await _leave_call(chat_id)
 
     state["playing"] = False
     state["paused"] = False
     state["title"] = None
     state["path"] = None
 
-    # Play next from queue
     if state["queue"]:
         next_item = state["queue"].pop(0)
         ok, msg = await play_local_file(chat_id, next_item["path"], next_item["title"], force=True)
@@ -183,21 +188,21 @@ async def skip_stream(chat_id: int):
     return True, "⏭ Skipped. Queue empty."
 
 async def stop_stream(chat_id: int):
+    """Fully stop streaming and clear queue."""
     state = get_state(chat_id)
-    try:
-        await _ensure_started()
-        try:
-            await pytgcalls.leave_group_call(chat_id)
-        except Exception:
-            pass
-    except Exception:
-        pass
+    was_playing = state["playing"] or bool(state["queue"])
+
+    await _leave_call(chat_id)
+
     state["playing"] = False
     state["paused"] = False
     state["title"] = None
     state["path"] = None
     state["queue"] = []
-    return True, "⏹ Stopped and queue cleared."
+
+    if was_playing:
+        return True, "⏹ **Stopped streaming**\nQueue cleared. Bot left the Voice Chat."
+    return True, "⏹ Nothing was playing. Queue cleared."
 
 def get_queue_text(chat_id: int):
     state = get_state(chat_id)
