@@ -1,6 +1,6 @@
 """
 Music Player + Movie + Adult Bot
-With VC play restored from original stack
+Features: skip, pause, resume, queue, public/private mode
 """
 
 import asyncio
@@ -11,14 +11,37 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, 
 from pyrogram import Client, filters
 from core.decorators import register, handle_error
 from movie_api import search_movie, search_adult, download_file
-from core.stream import play_local_file
+from core.stream import (
+    play_local_file,
+    pause_stream,
+    resume_stream,
+    skip_stream,
+    stop_stream,
+    get_queue_text,
+    get_state,
+)
 
 movie_cache = {}
 adult_cache = {}
 
+# Public / Private mode
+# True = public (everyone can use), False = private (only owner/sudo)
+BOT_PUBLIC = True
+
 def extract_args(text):
     parts = text.split(None, 1)
     return parts[1] if len(parts) > 1 else ""
+
+def is_owner(user_id: int) -> bool:
+    sudo = getattr(config, "SUDO_USERS", []) or []
+    if not sudo:
+        return True  # if no sudo set, allow (fallback)
+    return user_id in sudo
+
+def can_use(user_id: int) -> bool:
+    if BOT_PUBLIC:
+        return True
+    return is_owner(user_id)
 
 if getattr(config, "BOT_TOKEN", None):
     bot = Client("MusicPlayer", api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN, in_memory=True)
@@ -73,27 +96,41 @@ def build_adult_keyboard(items, page=0):
         buttons.append(nav)
     return InlineKeyboardMarkup(buttons) if buttons else None
 
+# ==================== BASIC ====================
+
 @client.on_message(filters.command(["start"], PREFIXES) & ~filters.bot)
 @handle_error
 async def start(_, message: Message):
     name = message.from_user.mention if message.from_user else "User"
+    mode = "🌐 Public" if BOT_PUBLIC else "🔒 Private"
     await message.reply_text(
-        f"Hello {name}!\n\n**FFGAMING X MUSIC BOT**\n\n"
-        "/play <name> - Movie/Series\n"
-        "/movie <name> - Movie search\n"
-        "/adult or /xxx <query> - Adult content\n"
+        f"Hello {name}!\n\n**FFGAMING X MUSIC BOT**\nMode: {mode}\n\n"
+        "/play /movie - Movies\n"
+        "/adult /xxx - Adult\n"
+        "/skip /pause /resume /stop /queue\n"
+        "/mode public|private (owner only)\n"
         "/help /ping"
     )
 
 @client.on_message(filters.command("help", PREFIXES) & ~filters.bot)
 @handle_error
 async def help_cmd(_, message: Message):
+    mode = "Public" if BOT_PUBLIC else "Private"
     await message.reply_text(
-        "**Commands**\n"
-        "/play <name> - Search movie/series\n"
-        "/movie <name> - Movie search\n"
-        "/adult or /xxx <query> - Adult videos\n"
-        "/ping\n/start"
+        f"**Commands** (Mode: {mode})\n\n"
+        "🎵 **Play**\n"
+        "/play <name> /movie <name>\n"
+        "/adult or /xxx <query>\n\n"
+        "⏯ **Controls**\n"
+        "/skip or /next - Skip current\n"
+        "/pause - Pause\n"
+        "/resume - Resume\n"
+        "/stop - Stop + clear queue\n"
+        "/queue or /q - Show queue\n\n"
+        "🔐 **Owner only**\n"
+        "/mode public - Everyone can use\n"
+        "/mode private - Only you can use\n"
+        "/mode - Show current mode"
     )
 
 @client.on_message(filters.command("ping", PREFIXES) & ~filters.bot)
@@ -101,10 +138,96 @@ async def help_cmd(_, message: Message):
 async def ping(_, message: Message):
     await message.reply_text("🤖 **Pong!**")
 
+# ==================== MODE (OWNER ONLY) ====================
+
+@client.on_message(filters.command("mode", PREFIXES) & ~filters.bot)
+@handle_error
+async def mode_cmd(_, message: Message):
+    global BOT_PUBLIC
+    user_id = message.from_user.id if message.from_user else 0
+
+    if not is_owner(user_id):
+        await message.reply_text("❌ Only the bot owner can change mode.")
+        return
+
+    arg = extract_args(message.text).lower().strip()
+
+    if arg in ("public", "on", "open"):
+        BOT_PUBLIC = True
+        await message.reply_text("🌐 **Public mode ON**\nEveryone can use the bot now.")
+    elif arg in ("private", "off", "lock"):
+        BOT_PUBLIC = False
+        await message.reply_text("🔒 **Private mode ON**\nOnly you (owner) can use the bot now.")
+    else:
+        status = "🌐 Public" if BOT_PUBLIC else "🔒 Private"
+        await message.reply_text(
+            f"Current mode: **{status}**\n\n"
+            "/mode public - Allow everyone\n"
+            "/mode private - Only owner"
+        )
+
+# ==================== CONTROLS ====================
+
+@client.on_message(filters.command(["skip", "next"], PREFIXES) & ~filters.private)
+@handle_error
+async def skip_cmd(_, message: Message):
+    user_id = message.from_user.id if message.from_user else 0
+    if not can_use(user_id):
+        await message.reply_text("🔒 Bot is in **Private mode**. Only owner can use.")
+        return
+    ok, msg = await skip_stream(message.chat.id)
+    await message.reply_text(msg)
+
+@client.on_message(filters.command("pause", PREFIXES) & ~filters.private)
+@handle_error
+async def pause_cmd(_, message: Message):
+    user_id = message.from_user.id if message.from_user else 0
+    if not can_use(user_id):
+        await message.reply_text("🔒 Bot is in **Private mode**. Only owner can use.")
+        return
+    ok, msg = await pause_stream(message.chat.id)
+    await message.reply_text(msg)
+
+@client.on_message(filters.command("resume", PREFIXES) & ~filters.private)
+@handle_error
+async def resume_cmd(_, message: Message):
+    user_id = message.from_user.id if message.from_user else 0
+    if not can_use(user_id):
+        await message.reply_text("🔒 Bot is in **Private mode**. Only owner can use.")
+        return
+    ok, msg = await resume_stream(message.chat.id)
+    await message.reply_text(msg)
+
+@client.on_message(filters.command(["stop", "end"], PREFIXES) & ~filters.private)
+@handle_error
+async def stop_cmd(_, message: Message):
+    user_id = message.from_user.id if message.from_user else 0
+    if not can_use(user_id):
+        await message.reply_text("🔒 Bot is in **Private mode**. Only owner can use.")
+        return
+    ok, msg = await stop_stream(message.chat.id)
+    await message.reply_text(msg)
+
+@client.on_message(filters.command(["queue", "q"], PREFIXES) & ~filters.private)
+@handle_error
+async def queue_cmd(_, message: Message):
+    user_id = message.from_user.id if message.from_user else 0
+    if not can_use(user_id):
+        await message.reply_text("🔒 Bot is in **Private mode**. Only owner can use.")
+        return
+    text = get_queue_text(message.chat.id)
+    await message.reply_text(text)
+
+# ==================== SEARCH ====================
+
 @client.on_message(filters.command(["movie", "mv"], PREFIXES) & ~filters.private)
 @register
 @handle_error
 async def movie_cmd(_, message: Message):
+    user_id = message.from_user.id if message.from_user else 0
+    if not can_use(user_id):
+        await message.reply_text("🔒 Bot is in **Private mode**. Only owner can use.")
+        return
     query = extract_args(message.text)
     if not query:
         await message.reply_text("Usage: /movie <name>")
@@ -123,6 +246,10 @@ async def movie_cmd(_, message: Message):
 @register
 @handle_error
 async def play_cmd(_, message: Message):
+    user_id = message.from_user.id if message.from_user else 0
+    if not can_use(user_id):
+        await message.reply_text("🔒 Bot is in **Private mode**. Only owner can use.")
+        return
     query = extract_args(message.text)
     if not query:
         await message.reply_text("Usage: /play <name>")
@@ -141,6 +268,10 @@ async def play_cmd(_, message: Message):
 @register
 @handle_error
 async def adult_cmd(_, message: Message):
+    user_id = message.from_user.id if message.from_user else 0
+    if not can_use(user_id):
+        await message.reply_text("🔒 Bot is in **Private mode**. Only owner can use.")
+        return
     query = extract_args(message.text)
     if not query:
         await message.reply_text("Usage: /adult <query> or /xxx <query>")
@@ -155,9 +286,15 @@ async def adult_cmd(_, message: Message):
     text = f"🔞 **Adult Search**\n\nFound **{len(items)}** results for: `{query}`\n\nChoose a video:"
     await status.edit_text(text, reply_markup=build_adult_keyboard(items, 0))
 
+# ==================== CALLBACKS ====================
+
 @client.on_callback_query(filters.regex(r"^mvpage\|"))
 @handle_error
 async def page_callback(_, callback: CallbackQuery):
+    user_id = callback.from_user.id if callback.from_user else 0
+    if not can_use(user_id):
+        await callback.answer("Private mode", show_alert=True)
+        return
     page = int(callback.data.split("|")[1])
     chat_id = callback.message.chat.id
     cached = movie_cache.get(chat_id)
@@ -174,6 +311,10 @@ async def page_callback(_, callback: CallbackQuery):
 @client.on_callback_query(filters.regex(r"^adpage\|"))
 @handle_error
 async def adult_page_callback(_, callback: CallbackQuery):
+    user_id = callback.from_user.id if callback.from_user else 0
+    if not can_use(user_id):
+        await callback.answer("Private mode", show_alert=True)
+        return
     page = int(callback.data.split("|")[1])
     chat_id = callback.message.chat.id
     cached = adult_cache.get(chat_id)
@@ -189,6 +330,10 @@ async def adult_page_callback(_, callback: CallbackQuery):
 @client.on_callback_query(filters.regex(r"^mv\|"))
 @handle_error
 async def movie_callback(_, callback: CallbackQuery):
+    user_id = callback.from_user.id if callback.from_user else 0
+    if not can_use(user_id):
+        await callback.answer("Private mode", show_alert=True)
+        return
     parts = callback.data.split("|")
     if len(parts) < 6:
         await callback.answer("Invalid")
@@ -228,17 +373,21 @@ async def movie_callback(_, callback: CallbackQuery):
         return
 
     size = os.path.getsize(local_path) / (1024*1024)
-    await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n▶️ Playing in Voice Chat...")
+    await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n▶️ Playing / Queueing...")
 
     success, msg = await play_local_file(chat_id, local_path, f"{title} S{season}E{episode}")
     if success:
-        await status.edit_text(f"✅ Downloaded + Playing!\n📁 {os.path.basename(local_path)}\n📦 {size:.1f} MB\n\n{msg}")
+        await status.edit_text(f"✅ **{msg}**\n📁 {os.path.basename(local_path)}\n📦 {size:.1f} MB")
     else:
-        await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n❌ Play failed: {msg}")
+        await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n❌ {msg}")
 
 @client.on_callback_query(filters.regex(r"^ad\|"))
 @handle_error
 async def adult_callback(_, callback: CallbackQuery):
+    user_id = callback.from_user.id if callback.from_user else 0
+    if not can_use(user_id):
+        await callback.answer("Private mode", show_alert=True)
+        return
     parts = callback.data.split("|")
     if len(parts) < 3:
         await callback.answer("Invalid")
@@ -270,14 +419,14 @@ async def adult_callback(_, callback: CallbackQuery):
         return
 
     size = os.path.getsize(local_path) / (1024*1024)
-    await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n▶️ Playing in Voice Chat...")
+    await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n▶️ Playing / Queueing...")
 
     success, msg = await play_local_file(chat_id, local_path, title[:40])
     if success:
-        await status.edit_text(f"✅ Downloaded + Playing!\n📁 {os.path.basename(local_path)}\n📦 {size:.1f} MB\n\n{msg}")
+        await status.edit_text(f"✅ **{msg}**\n📁 {os.path.basename(local_path)}\n📦 {size:.1f} MB")
     else:
-        await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n❌ Play failed: {msg}")
+        await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n❌ {msg}")
 
-print("Music + Movie + Adult + VC Play (original stack) loaded")
+print("Bot loaded: skip/pause/queue + public/private mode")
 if __name__ == "__main__":
     client.run()
