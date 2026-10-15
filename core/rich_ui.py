@@ -1,6 +1,6 @@
 """
-Rich Message = nice formatted text only.
-Control buttons = classic reply_markup only (one set, Pause/Resume toggles cleanly).
+Rich Now Playing card (text only) + classic reply_markup for controls.
+No in-message buttons → no double keyboards.
 """
 
 import re
@@ -58,7 +58,7 @@ def build_now_playing_html(title: str, duration=0, requester: str = "User", queu
     if thumb and str(thumb).startswith("http"):
         media = f'<tg-slideshow><img src="{thumb}"/><figcaption>{safe_title}</figcaption></tg-slideshow><br/>'
 
-    # NO in-message buttons — prevents double keyboard
+    # Rich text only — NO <tg-button> (buttons come from reply_markup)
     return f"<h3>{header}</h3>{media}<p>{body}</p>"
 
 
@@ -83,20 +83,49 @@ def plain_now_playing(title, duration=0, requester="User", queued=False):
     )
 
 
-async def send_rich_now_playing(chat_id, title, duration=0, requester="User", queued=False, thumb=""):
+def _kb_to_api(keyboard):
+    """Convert Pyrogram InlineKeyboardMarkup to Bot API dict."""
+    if not keyboard:
+        return None
+    rows = []
+    for row in keyboard.inline_keyboard:
+        r = []
+        for btn in row:
+            item = {"text": btn.text}
+            if btn.callback_data:
+                item["callback_data"] = btn.callback_data
+            if btn.url:
+                item["url"] = btn.url
+            r.append(item)
+        rows.append(r)
+    return {"inline_keyboard": rows}
+
+
+async def send_rich_now_playing(chat_id, title, duration=0, requester="User", queued=False, thumb="", reply_markup=None):
+    """
+    Send rich formatted card + classic keyboard under it.
+    Returns True if rich send succeeded.
+    """
     token = getattr(config, "BOT_TOKEN", "") or ""
     if not token:
         return False
 
     html = build_now_playing_html(title, duration, requester, queued, thumb)
     url = f"https://api.telegram.org/bot{token}/sendRichMessage"
-    payload = {"chat_id": chat_id, "rich_message": {"html": html}}
+    payload = {
+        "chat_id": chat_id,
+        "rich_message": {"html": html},
+    }
+    api_kb = _kb_to_api(reply_markup)
+    if api_kb:
+        payload["reply_markup"] = api_kb
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 data = await resp.json()
                 if data.get("ok"):
-                    print("Rich message sent OK")
+                    print("Rich message + keyboard sent OK")
                     return True
                 print(f"sendRichMessage failed: {data}")
                 return False
