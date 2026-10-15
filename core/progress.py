@@ -1,12 +1,11 @@
 """
-Live progress bar updater — edits the same Now Playing message every few seconds.
+Live progress bar — edits same Now Playing message every few seconds.
 """
 
 import asyncio
 import time
-from core.rich_ui import plain_now_playing, progress_bar, fmt_duration, clean_name
+from core.rich_ui import plain_now_playing
 
-# chat_id -> updater task
 _tasks = {}
 
 
@@ -26,18 +25,17 @@ async def start_progress(
     get_state_fn,
     build_keyboard_fn,
 ):
-    """Start background task that edits `message` with live progress."""
     cancel_progress(chat_id)
 
     if not duration or duration <= 0:
-        return  # no point updating without duration
+        return
 
     state = get_state_fn(chat_id)
     state["np_msg_id"] = message.id
     state["duration"] = duration
     state["start_ts"] = time.time()
     state["paused_at"] = None
-    state["elapsed_base"] = 0  # seconds already played before last resume
+    state["elapsed_base"] = 0
 
     async def _loop():
         try:
@@ -50,7 +48,6 @@ async def start_progress(
                     break
 
                 if st.get("paused"):
-                    # freeze: use elapsed_base
                     elapsed = int(st.get("elapsed_base") or 0)
                 else:
                     start = st.get("start_ts") or time.time()
@@ -60,18 +57,12 @@ async def start_progress(
                 qlen = len(st.get("queue") or [])
                 title_now = st.get("title") or title
 
-                text = (
-                    f"🎧 **MUSIC IS PLAYING**\n\n"
-                    f"🎵 **NOW PLAYING :** {clean_name(title_now)[:55]}\n"
-                    f"⏱ **TRACK DURATION :** `{fmt_duration(duration)} MIN`\n"
-                    f"👤 **REQUESTED BY :** {clean_name(requester)}\n\n"
-                    f"{progress_bar(duration, elapsed)}\n\n"
-                    f"🎶 Your track is now playing\n"
-                    f"😌 Sit back, relax & enjoy the music"
+                text = plain_now_playing(
+                    title_now, duration, requester,
+                    queued=False, queue_len=qlen, pos=elapsed,
                 )
                 kb = build_keyboard_fn(paused=bool(st.get("paused")), queue_len=qlen)
                 try:
-                    # caption for photo messages, text for normal
                     if getattr(message, "photo", None):
                         await message.edit_caption(text, reply_markup=kb)
                     else:
@@ -82,7 +73,6 @@ async def start_progress(
                         continue
                     if "message to edit not found" in err or "message_id_invalid" in err:
                         break
-                    # flood / other — keep trying lightly
                     print(f"progress edit: {e}")
 
                 if elapsed >= duration:

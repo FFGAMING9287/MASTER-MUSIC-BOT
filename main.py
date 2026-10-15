@@ -1,5 +1,5 @@
 """
-Music Player bot - live progress bar on Now Playing message
+Music Player bot - premium UI + live progress
 """
 
 import asyncio
@@ -21,7 +21,7 @@ from core.stream import (
     get_state,
 )
 from core.youtube import search_youtube, get_stream_info
-from core.rich_ui import plain_now_playing, clean_name
+from core.rich_ui import plain_now_playing, clean_name, status_searching, status_downloading, status_results
 from core.duration import duration_from_file, duration_from_item
 from core.progress import start_progress, cancel_progress, on_pause, on_resume
 
@@ -73,7 +73,6 @@ def build_player_keyboard(paused=False, queue_len=0):
         if not paused
         else InlineKeyboardButton("▶ Resume", callback_data="ctl|resume")
     )
-    qlabel = f"☰ Queue · {queue_len}"
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("↻ Replay", callback_data="ctl|replay"),
@@ -81,7 +80,7 @@ def build_player_keyboard(paused=False, queue_len=0):
             InlineKeyboardButton("≫ Skip", callback_data="ctl|skip"),
         ],
         [
-            InlineKeyboardButton(qlabel, callback_data="ctl|queue"),
+            InlineKeyboardButton(f"☰ Queue · {queue_len}", callback_data="ctl|queue"),
             InlineKeyboardButton("⏹ Stop", callback_data="ctl|stop"),
         ],
     ])
@@ -100,7 +99,6 @@ def start_keyboard():
     ])
 
 async def send_now_playing(chat_id, title, duration=0, requester="User", queued=False, thumb="", edit_msg=None):
-    """Always send editable plain message so progress can live-update."""
     state = get_state(chat_id)
     qlen = len(state.get("queue") or [])
     kb = build_player_keyboard(paused=False, queue_len=qlen)
@@ -125,7 +123,6 @@ async def send_now_playing(chat_id, title, duration=0, requester="User", queued=
             print(f"send_now_playing fail: {e}")
             return False
 
-    # Live progress only when actually playing (not just queued)
     if not queued and duration and duration > 0 and msg:
         await start_progress(
             client, chat_id, msg, title, duration, requester,
@@ -208,15 +205,17 @@ async def start(_, message: Message):
     name = clean_name(message.from_user.first_name if message.from_user else "User")
     mode = "🌐 Public" if BOT_PUBLIC else "🔒 Private"
     text = (
-        f"🎧 **Welcome to FFGAMING X MUSIC BOT**\n\n"
+        f"╔══════════════════════╗\n"
+        f"║  🎧  **FFGAMING X MUSIC**\n"
+        f"╚══════════════════════╝\n\n"
         f"👋 Hello **{name}**!\n"
         f"🔐 Mode : `{mode}`\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎵 **Music**\n`/song` `/yt` `<name or link>`\n\n"
-        f"🎬 **Movies**\n`/play` `/movie` `<name>`\n\n"
-        f"🔞 **Adult**\n`/adult` `/xxx` `<query>`\n\n"
+        f"🎵 **Music**\n`/song` `/yt`  name or link\n\n"
+        f"🎬 **Movies**\n`/play` `/movie`  name\n\n"
+        f"🔞 **Adult**\n`/adult` `/xxx`  query\n\n"
         f"⏯ **Controls**\n`/skip` `/pause` `/resume` `/stop` `/queue`\n\n"
-        f"🔐 **Owner**\n`/mode public` | `/mode private`\n"
+        f"🔐 **Owner**\n`/mode public` | `private`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"😌 Sit back, relax & enjoy"
     )
@@ -227,14 +226,15 @@ async def start(_, message: Message):
 async def help_cmd(_, message: Message):
     mode = "🌐 Public" if BOT_PUBLIC else "🔒 Private"
     text = (
-        f"📖 **Command Guide**\nMode : `{mode}`\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎵 **YouTube** — `/song` `/yt`\n"
-        f"🎬 **Movies** — `/play` `/movie`\n"
-        f"🔞 **Adult** — `/adult` `/xxx`\n"
-        f"⏯ **Controls** — `/skip` `/pause` `/resume` `/stop` `/queue`\n"
-        f"🔐 **Owner** — `/mode public|private`\n"
-        f"━━━━━━━━━━━━━━━━━━━━"
+        f"╔══════════════════════╗\n"
+        f"║  📖  **COMMAND GUIDE**\n"
+        f"╚══════════════════════╝\n\n"
+        f"Mode : `{mode}`\n\n"
+        f"🎵 YouTube — `/song` `/yt`\n"
+        f"🎬 Movies — `/play` `/movie`\n"
+        f"🔞 Adult — `/adult` `/xxx`\n"
+        f"⏯ Controls — `/skip` `/pause` `/resume` `/stop` `/queue`\n"
+        f"🔐 Owner — `/mode public|private`"
     )
     await message.reply_text(text, reply_markup=start_keyboard())
 
@@ -243,10 +243,10 @@ async def help_cmd(_, message: Message):
 async def help_callback(_, callback: CallbackQuery):
     section = callback.data.split("|")[1]
     texts = {
-        "song": "🎵 **YouTube Music**\n\n`/song <name>`\n`/yt <link>`",
-        "movie": "🎬 **Movies**\n\n`/play <name>`\n`/movie <name>`",
-        "adult": "🔞 **Adult**\n\n`/adult <query>`\n`/xxx <query>`",
-        "ctrl": "⏯ **Controls**\n\n`/skip` `/pause` `/resume` `/stop` `/queue`",
+        "song": "🎵 **YouTube Music**\n\n`/song <name>`\n`/yt <link>`\n\nPick result → plays in VC",
+        "movie": "🎬 **Movies**\n\n`/play <name>`\n`/movie <name>`\n\nEpisode + quality → VC",
+        "adult": "🔞 **Adult**\n\n`/adult <query>`\n`/xxx <query>`\n\nQuality → plays in VC",
+        "ctrl": "⏯ **Controls**\n\n`/skip` `/pause` `/resume`\n`/stop` `/queue`\n\nButtons on player also work",
         "full": "📖 **Full Help**\n\n🎵 `/song` `/yt`\n🎬 `/play` `/movie`\n🔞 `/adult` `/xxx`\n⏯ `/skip` `/pause` `/resume` `/stop` `/queue`\n🔐 `/mode public|private`",
     }
     text = texts.get(section, texts["full"])
@@ -259,7 +259,13 @@ async def help_callback(_, callback: CallbackQuery):
 @client.on_message(filters.command("ping", PREFIXES) & ~filters.bot)
 @handle_error
 async def ping(_, message: Message):
-    await message.reply_text("🤖 **Pong!**\n\n✅ Bot online")
+    await message.reply_text(
+        "╔══════════════════════╗\n"
+        "║  🤖  **PONG!**\n"
+        "╚══════════════════════╝\n\n"
+        "✅ Bot is online\n"
+        "🎧 Ready for Voice Chat"
+    )
 
 @client.on_message(filters.command("mode", PREFIXES) & ~filters.bot)
 @handle_error
@@ -270,13 +276,13 @@ async def mode_cmd(_, message: Message):
     arg = extract_args(message.text).lower().strip()
     if arg in ("public", "on", "open"):
         BOT_PUBLIC = True
-        await message.reply_text("🌐 **Public Mode ON**")
+        await message.reply_text("🌐 **Public Mode ON**\n\nEveryone can use the bot.")
     elif arg in ("private", "off", "lock"):
         BOT_PUBLIC = False
-        await message.reply_text("🔒 **Private Mode ON**")
+        await message.reply_text("🔒 **Private Mode ON**\n\nOnly owner can use features.")
     else:
         status = "🌐 Public" if BOT_PUBLIC else "🔒 Private"
-        await message.reply_text(f"🔐 **Mode** : `{status}`")
+        await message.reply_text(f"🔐 **Mode** : `{status}`\n\n`/mode public`\n`/mode private`")
 
 @client.on_message(filters.command(["skip", "next"], PREFIXES) & ~filters.private)
 @handle_error
@@ -319,7 +325,12 @@ async def stop_cmd(_, message: Message):
 async def queue_cmd(_, message: Message):
     if not can_use(message.from_user.id if message.from_user else 0):
         return await message.reply_text("🔒 **Private mode**")
-    await message.reply_text(f"☰ **Queue**\n\n{get_queue_text(message.chat.id)}")
+    await message.reply_text(
+        f"╔══════════════════════╗\n"
+        f"║  ☰  **QUEUE**\n"
+        f"╚══════════════════════╝\n\n"
+        f"{get_queue_text(message.chat.id)}"
+    )
 
 @client.on_callback_query(filters.regex(r"^ctl\|"))
 @handle_error
@@ -361,7 +372,9 @@ async def control_callback(_, callback: CallbackQuery):
         await callback.message.reply_text(f"⏹ **Stopped**\n\n{msg}")
     elif action == "queue":
         await callback.answer()
-        await callback.message.reply_text(f"☰ **Queue**\n\n{get_queue_text(chat_id)}")
+        await callback.message.reply_text(
+            f"╔══════════════════════╗\n║  ☰  **QUEUE**\n╚══════════════════════╝\n\n{get_queue_text(chat_id)}"
+        )
     elif action == "replay":
         cancel_progress(chat_id)
         path = state.get("path")
@@ -389,11 +402,11 @@ async def song_cmd(_, message: Message):
     if not query:
         return await message.reply_text("🎵 **YouTube**\n\n`/song <name>`\n`/yt <link>`")
 
-    status = await message.reply_text("🔍 **Searching YouTube...**")
+    status = await message.reply_text(status_searching("YouTube"))
     req = requester_name(message.from_user)
 
     if "youtube.com" in query or "youtu.be" in query:
-        await status.edit_text("⬇️ **Getting stream...**")
+        await status.edit_text("⬇️ **Getting stream...**\n\n⏳ Please wait")
         info = await get_stream_info(query)
         if not info:
             return await status.edit_text("❌ **Could not get stream**")
@@ -412,7 +425,7 @@ async def song_cmd(_, message: Message):
         return await status.edit_text("❌ **No results found**")
     yt_cache[message.chat.id] = results
     await status.edit_text(
-        f"🎵 **YouTube Results**\n\nQuery : `{query}`\nFound : **{len(results)}**\n\nChoose:",
+        status_results("YouTube", query, len(results)),
         reply_markup=build_yt_keyboard(results),
     )
 
@@ -429,7 +442,7 @@ async def yt_callback(_, callback: CallbackQuery):
 
     item = results[idx]
     await callback.answer("Loading...")
-    status = await callback.message.reply_text(f"⬇️ **Getting stream**\n\n`{item['title'][:50]}`")
+    status = await callback.message.reply_text(status_downloading(item["title"]))
     req = requester_name(callback.from_user)
 
     info = await get_stream_info(item["url"])
@@ -453,7 +466,7 @@ async def movie_cmd(_, message: Message):
     query = extract_args(message.text)
     if not query:
         return await message.reply_text("🎬 **Movies**\n\n`/movie <name>`")
-    status = await message.reply_text("🔍 **Searching movies...**")
+    status = await message.reply_text(status_searching("movie"))
     data = await search_movie(query)
     if not data or not data.get("results"):
         return await status.edit_text("❌ **No results found**")
@@ -462,7 +475,8 @@ async def movie_cmd(_, message: Message):
     await status.edit_text(
         f"🎬 **{result.get('title')}**\n\n"
         f"📅 `{result.get('year')}` · ⭐ `{result.get('rating','N/A')}/10`\n"
-        f"📺 `{len(result.get('episodes',[]))}` episodes\n\nChoose:",
+        f"📺 `{len(result.get('episodes',[]))}` episodes\n\n"
+        f"👇 Choose episode & quality",
         reply_markup=build_movie_keyboard(data, 0),
     )
 
@@ -475,7 +489,7 @@ async def play_cmd(_, message: Message):
     query = extract_args(message.text)
     if not query:
         return await message.reply_text("🎬 **Play**\n\n`/play <name>`")
-    status = await message.reply_text("🔍 **Searching...**")
+    status = await message.reply_text(status_searching("generic"))
     data = await search_movie(query)
     if data and data.get("results"):
         movie_cache[message.chat.id] = {"data": data, "page": 0}
@@ -483,11 +497,12 @@ async def play_cmd(_, message: Message):
         await status.edit_text(
             f"🎬 **{result.get('title')}**\n\n"
             f"📅 `{result.get('year')}` · ⭐ `{result.get('rating','N/A')}/10`\n"
-            f"📺 `{len(result.get('episodes',[]))}` episodes\n\nChoose:",
+            f"📺 `{len(result.get('episodes',[]))}` episodes\n\n"
+            f"👇 Choose episode & quality",
             reply_markup=build_movie_keyboard(data, 0),
         )
         return
-    await status.edit_text(f"❌ No movie.\nTry `/song {query}`")
+    await status.edit_text(f"❌ No movie found.\nTry `/song {query}`")
 
 @client.on_message(filters.command(["adult", "xxx", "nsfw"], PREFIXES) & ~filters.private)
 @register
@@ -498,14 +513,14 @@ async def adult_cmd(_, message: Message):
     query = extract_args(message.text)
     if not query:
         return await message.reply_text("🔞 **Adult**\n\n`/adult <query>`\n`/xxx <query>`")
-    status = await message.reply_text("🔍 **Searching adult content...**")
+    status = await message.reply_text(status_searching("adult"))
     data = await search_adult(query)
     if not data or not data.get("items"):
         return await status.edit_text("❌ **No results found**")
     items = data["items"]
     adult_cache[message.chat.id] = {"items": items, "page": 0}
     await status.edit_text(
-        f"🔞 **Adult Search**\n\nQuery : `{query}`\nFound : **{len(items)}**\n\nChoose:",
+        status_results("Adult", query, len(items)),
         reply_markup=build_adult_keyboard(items, 0),
     )
 
@@ -522,7 +537,7 @@ async def page_callback(_, callback: CallbackQuery):
     cached["page"] = page
     result = data["results"][0]
     await callback.message.edit_text(
-        f"🎬 **{result.get('title')}** · Page `{page+1}`\n\nChoose:",
+        f"🎬 **{result.get('title')}** · Page `{page+1}`\n\n👇 Choose:",
         reply_markup=build_movie_keyboard(data, page),
     )
     await callback.answer()
@@ -539,7 +554,7 @@ async def adult_page_callback(_, callback: CallbackQuery):
     items = cached["items"]
     cached["page"] = page
     await callback.message.edit_text(
-        f"🔞 Page `{page+1}` · **{len(items)}** results\n\nChoose:",
+        f"🔞 Page `{page+1}` · **{len(items)}** results\n\n👇 Choose:",
         reply_markup=build_adult_keyboard(items, page),
     )
     await callback.answer()
@@ -578,7 +593,7 @@ async def movie_callback(_, callback: CallbackQuery):
 
     req = requester_name(callback.from_user)
     status = await callback.message.reply_text(
-        f"⬇️ **Downloading**\n\n`{title}` · S{season}E{episode} · {quality}"
+        status_downloading(f"{title} S{season}E{episode}", quality)
     )
     filename = f"{title.replace(' ', '_')}_s{season}e{episode}_{quality}.mp4"
     local_path, info = await download_file(download_url, filename)
@@ -613,9 +628,7 @@ async def adult_callback(_, callback: CallbackQuery):
 
     await callback.answer("Downloading...")
     req = requester_name(callback.from_user)
-    status = await callback.message.reply_text(
-        f"⬇️ **Downloading**\n\n`{title[:55]}`\nQuality : `{quality}`"
-    )
+    status = await callback.message.reply_text(status_downloading(title, quality))
     filename = f"adult_{idx}_{quality}.mp4"
     local_path, info = await download_file(download_url, filename)
     if not local_path:
@@ -626,6 +639,6 @@ async def adult_callback(_, callback: CallbackQuery):
     dur = duration_from_item(item) or await duration_from_file(local_path)
     await send_now_playing(chat_id, title[:50], dur, req, "queue" in msg.lower(), edit_msg=status)
 
-print("Bot loaded: live progress bar")
+print("Bot loaded: premium UI + live progress")
 if __name__ == "__main__":
     client.run()
