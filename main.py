@@ -1,5 +1,5 @@
 """
-Music Player — pure Rich Message UI on every command
+Music Player — pure Rich Message UI (no double keyboards)
 """
 
 import asyncio
@@ -116,10 +116,11 @@ def start_keyboard():
     ])
 
 async def reply_rich_or_text(message, html, plain, reply_markup=None):
-    """Prefer rich message; fallback to plain."""
-    ok = await send_rich(message.chat.id, html, reply_markup=reply_markup)
+    """Rich without classic keyboard (in-message buttons already in HTML)."""
+    ok = await send_rich(message.chat.id, html, reply_markup=None)
     if ok:
         return True
+    # Plain fallback needs classic keyboard
     await message.reply_text(plain, reply_markup=reply_markup)
     return False
 
@@ -131,19 +132,18 @@ async def send_now_playing(chat_id, title, duration=0, requester="User", queued=
     html = html_now_playing(title, duration, requester, queued, thumb, pos=0)
     plain = plain_now_playing(title, duration, requester, queued, qlen, pos=0)
 
-    # Rich first (new message)
-    rich_ok = await send_rich(chat_id, html, reply_markup=kb)
+    # Rich card with in-message buttons only (no classic under it)
+    rich_ok = await send_rich(chat_id, html, reply_markup=None)
     if rich_ok:
         if edit_msg:
             try:
                 await edit_msg.delete()
             except Exception:
                 pass
-        # Live progress needs editable plain message — send a second quiet tracker
-        # only if duration known (edits itself)
+        # Progress tracker: plain message WITHOUT keyboard (avoids double)
         if not queued and duration and duration > 0:
             try:
-                tracker = await client.send_message(chat_id, plain, reply_markup=kb)
+                tracker = await client.send_message(chat_id, plain, reply_markup=None)
                 await start_progress(
                     client, chat_id, tracker, title, duration, requester,
                     get_state, build_player_keyboard,
@@ -152,7 +152,7 @@ async def send_now_playing(chat_id, title, duration=0, requester="User", queued=
                 print(f"progress tracker: {e}")
         return True
 
-    # Fallback plain + progress on same msg
+    # Fallback plain + one keyboard
     msg = None
     if edit_msg:
         try:
@@ -247,8 +247,6 @@ def build_yt_keyboard(items):
         buttons.append([InlineKeyboardButton(label[:58], callback_data=f"yt|{i}")])
     return InlineKeyboardMarkup(buttons) if buttons else None
 
-# ==================== COMMANDS ====================
-
 @client.on_message(filters.command(["start"], PREFIXES) & ~filters.bot)
 @handle_error
 async def start(_, message: Message):
@@ -275,9 +273,9 @@ async def help_cmd(_, message: Message):
 async def help_callback(_, callback: CallbackQuery):
     section = callback.data.split("|")[1]
     map_html = {
-        "song": html_info("🎵 YouTube Music", "<code>/song &lt;name&gt;</code><br/><code>/yt &lt;link&gt;</code><br/><br/>Pick a result → plays in VC"),
-        "movie": html_info("🎬 Movies", "<code>/play &lt;name&gt;</code><br/><code>/movie &lt;name&gt;</code><br/><br/>Episode + quality → VC"),
-        "adult": html_info("🔞 Adult", "<code>/adult &lt;query&gt;</code><br/><code>/xxx &lt;query&gt;</code><br/><br/>Quality → plays in VC"),
+        "song": html_info("🎵 YouTube Music", "<code>/song <name></code><br/><code>/yt <link></code><br/><br/>Pick a result → plays in VC"),
+        "movie": html_info("🎬 Movies", "<code>/play <name></code><br/><code>/movie <name></code><br/><br/>Episode + quality → VC"),
+        "adult": html_info("🔞 Adult", "<code>/adult <query></code><br/><code>/xxx <query></code><br/><br/>Quality → plays in VC"),
         "ctrl": html_info("⏯ Controls", "<code>/skip</code> <code>/pause</code> <code>/resume</code><br/><code>/stop</code> <code>/queue</code>"),
         "full": html_help("🌐 Public" if BOT_PUBLIC else "🔒 Private"),
     }
@@ -291,7 +289,8 @@ async def help_callback(_, callback: CallbackQuery):
     html = map_html.get(section, map_html["full"])
     plain = plain_map.get(section, plain_map["full"])
     await callback.answer()
-    ok = await send_rich(callback.message.chat.id, html, start_keyboard())
+    # Rich only — no classic keyboard (avoids double)
+    ok = await send_rich(callback.message.chat.id, html, reply_markup=None)
     if not ok:
         try:
             await callback.message.edit_text(plain, reply_markup=start_keyboard())
@@ -382,34 +381,28 @@ async def control_callback(_, callback: CallbackQuery):
         on_pause(chat_id, get_state)
         ok, msg = await pause_stream(chat_id)
         await callback.answer(msg[:180] if msg else "Paused")
-        if ok:
-            try:
-                await callback.message.edit_reply_markup(build_player_keyboard(paused=True, queue_len=qlen))
-            except Exception:
-                pass
+        # Can't easily swap in-message buttons; answer is enough
     elif action == "resume":
         on_resume(chat_id, get_state)
         ok, msg = await resume_stream(chat_id)
         await callback.answer(msg[:180] if msg else "Resumed")
-        if ok:
-            try:
-                await callback.message.edit_reply_markup(build_player_keyboard(paused=False, queue_len=qlen))
-            except Exception:
-                pass
     elif action == "skip":
         cancel_progress(chat_id)
         ok, msg = await skip_stream(chat_id)
         await callback.answer("Skipped" if ok else (msg or "")[:180])
-        await send_rich(chat_id, html_info("⏭ Skip", msg)) or await callback.message.reply_text(f"⏭ {msg}")
+        if not await send_rich(chat_id, html_info("⏭ Skip", msg)):
+            await callback.message.reply_text(f"⏭ {msg}")
     elif action == "stop":
         cancel_progress(chat_id)
         ok, msg = await stop_stream(chat_id)
         await callback.answer("Stopped")
-        await send_rich(chat_id, html_info("⏹ Stopped", msg)) or await callback.message.reply_text(f"⏹ {msg}")
+        if not await send_rich(chat_id, html_info("⏹ Stopped", msg)):
+            await callback.message.reply_text(f"⏹ {msg}")
     elif action == "queue":
         await callback.answer()
         body = get_queue_text(chat_id)
-        await send_rich(chat_id, html_queue(body)) or await callback.message.reply_text(f"☰ **Queue**\n\n{body}")
+        if not await send_rich(chat_id, html_queue(body)):
+            await callback.message.reply_text(f"☰ **Queue**\n\n{body}")
     elif action == "replay":
         cancel_progress(chat_id)
         path = state.get("path")
@@ -437,7 +430,7 @@ async def song_cmd(_, message: Message):
     if not query:
         return await reply_rich_or_text(
             message,
-            html_info("🎵 YouTube", "<code>/song &lt;name&gt;</code><br/><code>/yt &lt;link&gt;</code>"),
+            html_info("🎵 YouTube", "<code>/song <name></code><br/><code>/yt <link></code>"),
             "🎵 `/song <name>`\n`/yt <link>`",
         )
 
@@ -464,11 +457,10 @@ async def song_cmd(_, message: Message):
         return await status.edit_text("❌ No results found")
     yt_cache[message.chat.id] = results
     html = html_search("YouTube", query, len(results))
-    if not await send_rich(message.chat.id, html, build_yt_keyboard(results)):
-        await status.edit_text(
-            status_results("YouTube", query, len(results)),
-            reply_markup=build_yt_keyboard(results),
-        )
+    kb = build_yt_keyboard(results)
+    # Search results need classic keyboard for choices
+    if not await send_rich(message.chat.id, html, kb):
+        await status.edit_text(status_results("YouTube", query, len(results)), reply_markup=kb)
     else:
         try:
             await status.delete()
@@ -511,7 +503,7 @@ async def movie_cmd(_, message: Message):
         return await reply_rich_or_text(message, html_error("Private mode"), "🔒 Private mode")
     query = extract_args(message.text)
     if not query:
-        return await reply_rich_or_text(message, html_info("🎬 Movies", "<code>/movie &lt;name&gt;</code>"), "🎬 `/movie <name>`")
+        return await reply_rich_or_text(message, html_info("🎬 Movies", "<code>/movie <name></code>"), "🎬 `/movie <name>`")
     status = await message.reply_text(status_searching("movie"))
     data = await search_movie(query)
     if not data or not data.get("results"):
@@ -526,7 +518,7 @@ async def movie_cmd(_, message: Message):
     kb = build_movie_keyboard(data, 0)
     if not await send_rich(message.chat.id, html, kb):
         await status.edit_text(
-            f"🎬 **{result.get('title')}**\n📅 `{result.get('year')}` · ⭐ `{result.get('rating','N/A')}/10`\n📺 `{len(result.get('episodes',[]))}`\n\nChoose:",
+            f"🎬 **{result.get('title')}**\nChoose:",
             reply_markup=kb,
         )
     else:
@@ -543,7 +535,7 @@ async def play_cmd(_, message: Message):
         return await reply_rich_or_text(message, html_error("Private mode"), "🔒 Private mode")
     query = extract_args(message.text)
     if not query:
-        return await reply_rich_or_text(message, html_info("🎬 Play", "<code>/play &lt;name&gt;</code>"), "🎬 `/play <name>`")
+        return await reply_rich_or_text(message, html_info("🎬 Play", "<code>/play <name></code>"), "🎬 `/play <name>`")
     status = await message.reply_text(status_searching("generic"))
     data = await search_movie(query)
     if data and data.get("results"):
@@ -556,10 +548,7 @@ async def play_cmd(_, message: Message):
         html = html_info(f"🎬 {result.get('title')}", body)
         kb = build_movie_keyboard(data, 0)
         if not await send_rich(message.chat.id, html, kb):
-            await status.edit_text(
-                f"🎬 **{result.get('title')}**\nChoose:",
-                reply_markup=kb,
-            )
+            await status.edit_text(f"🎬 **{result.get('title')}**\nChoose:", reply_markup=kb)
         else:
             try:
                 await status.delete()
@@ -578,7 +567,7 @@ async def adult_cmd(_, message: Message):
     if not query:
         return await reply_rich_or_text(
             message,
-            html_info("🔞 Adult", "<code>/adult &lt;query&gt;</code><br/><code>/xxx &lt;query&gt;</code>"),
+            html_info("🔞 Adult", "<code>/adult <query></code><br/><code>/xxx <query></code>"),
             "🔞 `/adult <query>`\n`/xxx <query>`",
         )
     status = await message.reply_text(status_searching("adult"))
@@ -711,6 +700,6 @@ async def adult_callback(_, callback: CallbackQuery):
     dur = duration_from_item(item) or await duration_from_file(local_path)
     await send_now_playing(chat_id, title[:50], dur, req, "queue" in msg.lower(), thumb=thumb, edit_msg=status)
 
-print("Bot loaded: pure Rich Message UI")
+print("Bot loaded: rich UI, no double buttons")
 if __name__ == "__main__":
     client.run()
