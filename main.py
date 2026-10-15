@@ -1,5 +1,6 @@
 """
 Music Player + Movie + Adult + YouTube Bot
+YouTube via Piped/Invidious (works on Railway)
 """
 
 import asyncio
@@ -49,7 +50,6 @@ def fmt_duration(sec):
     return f"{m}:{s:02d}"
 
 async def play_yt_result(chat_id, info):
-    """Play downloaded YouTube file (local) or remote URL."""
     title = (info.get("title") or "YouTube")[:60]
     if info.get("is_local") or (info.get("path") and os.path.isfile(info.get("path", ""))):
         path = info.get("path") or info.get("url")
@@ -230,10 +230,10 @@ async def song_cmd(_, message: Message):
     status = await message.reply_text("🔍 Searching YouTube...")
 
     if "youtube.com" in query or "youtu.be" in query:
-        await status.edit_text("⬇️ Downloading from YouTube...")
+        await status.edit_text("⬇️ Getting stream...")
         info = await get_stream_info(query)
         if not info:
-            await status.edit_text("❌ Download failed. Try another link or song.")
+            await status.edit_text("❌ Could not get stream. Try another link.")
             return
         await status.edit_text(f"▶️ Playing **{info['title'][:50]}**...")
         ok, msg = await play_yt_result(message.chat.id, info)
@@ -264,12 +264,12 @@ async def yt_callback(_, callback: CallbackQuery):
         return
 
     item = results[idx]
-    await callback.answer("Downloading...")
-    status = await callback.message.reply_text(f"⬇️ Downloading:\n**{item['title'][:50]}**")
+    await callback.answer("Loading...")
+    status = await callback.message.reply_text(f"⬇️ Getting stream:\n**{item['title'][:50]}**")
 
     info = await get_stream_info(item["url"])
     if not info:
-        await status.edit_text("❌ Download failed. Try another song.")
+        await status.edit_text("❌ Could not get stream. Try another song.")
         return
 
     ok, msg = await play_yt_result(chat_id, info)
@@ -469,6 +469,6 @@ async def adult_callback(_, callback: CallbackQuery):
     success, msg = await play_local_file(chat_id, local_path, title[:40])
     await status.edit_text(f"{'✅' if success else '❌'} **{msg}**\n📦 {size:.1f} MB")
 
-print("Bot loaded: YouTube download + Movie + Adult + Controls")
+print("Bot loaded: Piped/Invidious YT + Movie + Adult + Controls")
 if __name__ == "__main__":
     client.run()
