@@ -1,5 +1,5 @@
 """
-Music Player bot - Game Over style Now Playing card
+Music Player bot - live progress bar on Now Playing message
 """
 
 import asyncio
@@ -21,13 +21,9 @@ from core.stream import (
     get_state,
 )
 from core.youtube import search_youtube, get_stream_info
-from core.rich_ui import (
-    send_rich_now_playing,
-    send_photo_now_playing,
-    plain_now_playing,
-    clean_name,
-)
+from core.rich_ui import plain_now_playing, clean_name
 from core.duration import duration_from_file, duration_from_item
+from core.progress import start_progress, cancel_progress, on_pause, on_resume
 
 movie_cache = {}
 adult_cache = {}
@@ -104,45 +100,38 @@ def start_keyboard():
     ])
 
 async def send_now_playing(chat_id, title, duration=0, requester="User", queued=False, thumb="", edit_msg=None):
+    """Always send editable plain message so progress can live-update."""
     state = get_state(chat_id)
     qlen = len(state.get("queue") or [])
     kb = build_player_keyboard(paused=False, queue_len=qlen)
+    text = plain_now_playing(title, duration, requester, queued, qlen, pos=0)
 
-    # 1) Photo + caption (closest to Game Over Musics look)
-    if thumb and str(thumb).startswith("http"):
-        ok = await send_photo_now_playing(chat_id, title, duration, requester, queued, thumb, reply_markup=kb)
-        if ok:
+    msg = None
+    if edit_msg:
+        try:
+            msg = await edit_msg.edit_text(text, reply_markup=kb)
+        except Exception:
+            msg = None
+
+    if msg is None:
+        try:
+            msg = await client.send_message(chat_id, text, reply_markup=kb)
             if edit_msg:
                 try:
                     await edit_msg.delete()
                 except Exception:
                     pass
-            return True
+        except Exception as e:
+            print(f"send_now_playing fail: {e}")
+            return False
 
-    # 2) Rich message
-    ok = await send_rich_now_playing(chat_id, title, duration, requester, queued, thumb, reply_markup=kb)
-    if ok:
-        if edit_msg:
-            try:
-                await edit_msg.delete()
-            except Exception:
-                pass
-        return True
-
-    # 3) Plain text
-    text = plain_now_playing(title, duration, requester, queued, qlen)
-    if edit_msg:
-        try:
-            await edit_msg.edit_text(text, reply_markup=kb)
-            return True
-        except Exception:
-            pass
-    try:
-        await client.send_message(chat_id, text, reply_markup=kb)
-        return True
-    except Exception as e:
-        print(f"send_now_playing fail: {e}")
-        return False
+    # Live progress only when actually playing (not just queued)
+    if not queued and duration and duration > 0 and msg:
+        await start_progress(
+            client, chat_id, msg, title, duration, requester,
+            get_state, build_player_keyboard,
+        )
+    return True
 
 async def play_yt_result(chat_id, info):
     title = (info.get("title") or "YouTube")[:60]
@@ -294,6 +283,7 @@ async def mode_cmd(_, message: Message):
 async def skip_cmd(_, message: Message):
     if not can_use(message.from_user.id if message.from_user else 0):
         return await message.reply_text("🔒 **Private mode**")
+    cancel_progress(message.chat.id)
     ok, msg = await skip_stream(message.chat.id)
     await message.reply_text(f"⏭ {msg}")
 
@@ -302,6 +292,7 @@ async def skip_cmd(_, message: Message):
 async def pause_cmd(_, message: Message):
     if not can_use(message.from_user.id if message.from_user else 0):
         return await message.reply_text("🔒 **Private mode**")
+    on_pause(message.chat.id, get_state)
     ok, msg = await pause_stream(message.chat.id)
     await message.reply_text(msg)
 
@@ -310,6 +301,7 @@ async def pause_cmd(_, message: Message):
 async def resume_cmd(_, message: Message):
     if not can_use(message.from_user.id if message.from_user else 0):
         return await message.reply_text("🔒 **Private mode**")
+    on_resume(message.chat.id, get_state)
     ok, msg = await resume_stream(message.chat.id)
     await message.reply_text(msg)
 
@@ -318,6 +310,7 @@ async def resume_cmd(_, message: Message):
 async def stop_cmd(_, message: Message):
     if not can_use(message.from_user.id if message.from_user else 0):
         return await message.reply_text("🔒 **Private mode**")
+    cancel_progress(message.chat.id)
     ok, msg = await stop_stream(message.chat.id)
     await message.reply_text(f"⏹ **Stopped**\n\n{msg}")
 
@@ -339,6 +332,7 @@ async def control_callback(_, callback: CallbackQuery):
     qlen = len(state.get("queue") or [])
 
     if action == "pause":
+        on_pause(chat_id, get_state)
         ok, msg = await pause_stream(chat_id)
         await callback.answer(msg[:180] if msg else "Paused")
         if ok:
@@ -347,6 +341,7 @@ async def control_callback(_, callback: CallbackQuery):
             except Exception:
                 pass
     elif action == "resume":
+        on_resume(chat_id, get_state)
         ok, msg = await resume_stream(chat_id)
         await callback.answer(msg[:180] if msg else "Resumed")
         if ok:
@@ -355,10 +350,12 @@ async def control_callback(_, callback: CallbackQuery):
             except Exception:
                 pass
     elif action == "skip":
+        cancel_progress(chat_id)
         ok, msg = await skip_stream(chat_id)
         await callback.answer("Skipped" if ok else (msg or "")[:180])
         await callback.message.reply_text(f"⏭ {msg}")
     elif action == "stop":
+        cancel_progress(chat_id)
         ok, msg = await stop_stream(chat_id)
         await callback.answer("Stopped")
         await callback.message.reply_text(f"⏹ **Stopped**\n\n{msg}")
@@ -366,6 +363,7 @@ async def control_callback(_, callback: CallbackQuery):
         await callback.answer()
         await callback.message.reply_text(f"☰ **Queue**\n\n{get_queue_text(chat_id)}")
     elif action == "replay":
+        cancel_progress(chat_id)
         path = state.get("path")
         title = state.get("title") or "Track"
         if not path:
@@ -376,7 +374,7 @@ async def control_callback(_, callback: CallbackQuery):
             ok, msg = await play_remote_url(chat_id, path, title, force=True)
         await callback.answer("Replaying..." if ok else (msg or "")[:180])
         if ok:
-            dur = await duration_from_file(path) if os.path.isfile(str(path)) else 0
+            dur = await duration_from_file(path) if os.path.isfile(str(path)) else (state.get("duration") or 0)
             await send_now_playing(chat_id, title, dur, requester_name(callback.from_user))
     else:
         await callback.answer()
@@ -610,7 +608,6 @@ async def adult_callback(_, callback: CallbackQuery):
     title = item.get("title", "Video")
     quality = item.get("quality", "?")
     download_url = item.get("downloadUrl") or item.get("download_url")
-    thumb = item.get("thumbnail") or item.get("thumb") or item.get("image") or ""
     if not download_url:
         return await callback.message.reply_text("❌ No download link.")
 
@@ -627,8 +624,8 @@ async def adult_callback(_, callback: CallbackQuery):
     if not success:
         return await status.edit_text(f"❌ {msg}")
     dur = duration_from_item(item) or await duration_from_file(local_path)
-    await send_now_playing(chat_id, title[:50], dur, req, "queue" in msg.lower(), thumb=thumb, edit_msg=status)
+    await send_now_playing(chat_id, title[:50], dur, req, "queue" in msg.lower(), edit_msg=status)
 
-print("Bot loaded: Game Over style Now Playing")
+print("Bot loaded: live progress bar")
 if __name__ == "__main__":
     client.run()
