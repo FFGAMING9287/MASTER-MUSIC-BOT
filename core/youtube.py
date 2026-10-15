@@ -1,13 +1,12 @@
 """
 YouTube search + stream URL extraction with yt-dlp
-Tries multiple player clients to bypass bot detection.
+Tries cookies + multiple player clients to bypass bot detection.
 """
 
 import asyncio
 import os
 from yt_dlp import YoutubeDL
 
-# Client order that often bypasses "Sign in to confirm you're not a bot"
 PLAYER_CLIENTS = [
     "android",
     "ios",
@@ -25,14 +24,29 @@ BASE_OPTS = {
     "source_address": "0.0.0.0",
 }
 
-# Optional cookies file (put cookies.txt in project root if needed)
-COOKIES_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cookies.txt")
+
+def _find_cookies():
+    """Find cookies.txt in common locations."""
+    candidates = [
+        os.path.join(os.getcwd(), "cookies.txt"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cookies.txt"),
+        "/MusicPlayer/cookies.txt",
+        "/app/cookies.txt",
+        "cookies.txt",
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            print(f"Using cookies: {p}")
+            return p
+    print("No cookies.txt found")
+    return None
 
 
 def _base_opts():
     opts = dict(BASE_OPTS)
-    if os.path.isfile(COOKIES_PATH):
-        opts["cookiefile"] = COOKIES_PATH
+    cookies = _find_cookies()
+    if cookies:
+        opts["cookiefile"] = cookies
     return opts
 
 
@@ -99,8 +113,6 @@ def _extract_with_client(url: str, client: str):
 
 
 def _get_stream_url_sync(url: str):
-    """Try multiple player clients until one works."""
-    # Normalize short links
     if "youtu.be/" in url:
         vid = url.split("youtu.be/")[-1].split("?")[0].split("&")[0]
         url = f"https://www.youtube.com/watch?v={vid}"
@@ -111,7 +123,6 @@ def _get_stream_url_sync(url: str):
             print(f"YT stream OK with client={client}")
             return result
 
-    # Last attempt: no client override
     opts = _base_opts()
     opts["format"] = "bestaudio/best"
     try:
