@@ -1,5 +1,5 @@
 """
-Music Player — pure Rich Message UI (no double keyboards)
+Music Player — single Now Playing message (no double)
 """
 
 import asyncio
@@ -116,49 +116,27 @@ def start_keyboard():
     ])
 
 async def reply_rich_or_text(message, html, plain, reply_markup=None):
-    """Rich without classic keyboard (in-message buttons already in HTML)."""
+    """Rich without classic keyboard when HTML has in-message buttons."""
     ok = await send_rich(message.chat.id, html, reply_markup=None)
     if ok:
         return True
-    # Plain fallback needs classic keyboard
     await message.reply_text(plain, reply_markup=reply_markup)
     return False
 
 async def send_now_playing(chat_id, title, duration=0, requester="User", queued=False, thumb="", edit_msg=None):
+    """ONE message only — editable plain with live progress + keyboard."""
     state = get_state(chat_id)
     qlen = len(state.get("queue") or [])
-    kb = build_player_keyboard(paused=False, queue_len=qlen)
-
-    html = html_now_playing(title, duration, requester, queued, thumb, pos=0)
+    kb = None if queued else build_player_keyboard(paused=False, queue_len=qlen)
     plain = plain_now_playing(title, duration, requester, queued, qlen, pos=0)
 
-    # Rich card with in-message buttons only (no classic under it)
-    rich_ok = await send_rich(chat_id, html, reply_markup=None)
-    if rich_ok:
-        if edit_msg:
-            try:
-                await edit_msg.delete()
-            except Exception:
-                pass
-        # Progress tracker: plain message WITHOUT keyboard (avoids double)
-        if not queued and duration and duration > 0:
-            try:
-                tracker = await client.send_message(chat_id, plain, reply_markup=None)
-                await start_progress(
-                    client, chat_id, tracker, title, duration, requester,
-                    get_state, build_player_keyboard,
-                )
-            except Exception as e:
-                print(f"progress tracker: {e}")
-        return True
-
-    # Fallback plain + one keyboard
     msg = None
     if edit_msg:
         try:
             msg = await edit_msg.edit_text(plain, reply_markup=kb)
         except Exception:
             msg = None
+
     if msg is None:
         try:
             msg = await client.send_message(chat_id, plain, reply_markup=kb)
@@ -289,7 +267,6 @@ async def help_callback(_, callback: CallbackQuery):
     html = map_html.get(section, map_html["full"])
     plain = plain_map.get(section, plain_map["full"])
     await callback.answer()
-    # Rich only — no classic keyboard (avoids double)
     ok = await send_rich(callback.message.chat.id, html, reply_markup=None)
     if not ok:
         try:
@@ -381,11 +358,20 @@ async def control_callback(_, callback: CallbackQuery):
         on_pause(chat_id, get_state)
         ok, msg = await pause_stream(chat_id)
         await callback.answer(msg[:180] if msg else "Paused")
-        # Can't easily swap in-message buttons; answer is enough
+        if ok:
+            try:
+                await callback.message.edit_reply_markup(build_player_keyboard(paused=True, queue_len=qlen))
+            except Exception:
+                pass
     elif action == "resume":
         on_resume(chat_id, get_state)
         ok, msg = await resume_stream(chat_id)
         await callback.answer(msg[:180] if msg else "Resumed")
+        if ok:
+            try:
+                await callback.message.edit_reply_markup(build_player_keyboard(paused=False, queue_len=qlen))
+            except Exception:
+                pass
     elif action == "skip":
         cancel_progress(chat_id)
         ok, msg = await skip_stream(chat_id)
@@ -458,7 +444,6 @@ async def song_cmd(_, message: Message):
     yt_cache[message.chat.id] = results
     html = html_search("YouTube", query, len(results))
     kb = build_yt_keyboard(results)
-    # Search results need classic keyboard for choices
     if not await send_rich(message.chat.id, html, kb):
         await status.edit_text(status_results("YouTube", query, len(results)), reply_markup=kb)
     else:
@@ -517,10 +502,7 @@ async def movie_cmd(_, message: Message):
     html = html_info(f"🎬 {result.get('title')}", body)
     kb = build_movie_keyboard(data, 0)
     if not await send_rich(message.chat.id, html, kb):
-        await status.edit_text(
-            f"🎬 **{result.get('title')}**\nChoose:",
-            reply_markup=kb,
-        )
+        await status.edit_text(f"🎬 **{result.get('title')}**\nChoose:", reply_markup=kb)
     else:
         try:
             await status.delete()
@@ -700,6 +682,6 @@ async def adult_callback(_, callback: CallbackQuery):
     dur = duration_from_item(item) or await duration_from_file(local_path)
     await send_now_playing(chat_id, title[:50], dur, req, "queue" in msg.lower(), thumb=thumb, edit_msg=status)
 
-print("Bot loaded: rich UI, no double buttons")
+print("Bot loaded: single Now Playing message")
 if __name__ == "__main__":
     client.run()
