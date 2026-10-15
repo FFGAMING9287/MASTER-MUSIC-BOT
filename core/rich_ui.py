@@ -1,6 +1,5 @@
 """
-Pure Telegram Rich Message UI (Bot API 10.1+)
-sendRichMessage for all bot cards. Classic keyboard under message for controls.
+Pure Rich Message UI — slideshows + in-message buttons (Bot API 10.1–10.3)
 """
 
 import re
@@ -53,7 +52,6 @@ def _kb_to_api(keyboard):
                 item["callback_data"] = btn.callback_data
             if getattr(btn, "url", None):
                 item["url"] = btn.url
-            # Bot API 9.4+ button styles when available
             style = getattr(btn, "style", None)
             if style:
                 item["style"] = style
@@ -63,15 +61,11 @@ def _kb_to_api(keyboard):
 
 
 async def send_rich(chat_id, html: str, reply_markup=None):
-    """Core: POST sendRichMessage. Returns True on success."""
     token = getattr(config, "BOT_TOKEN", "") or ""
     if not token:
         return False
     url = f"https://api.telegram.org/bot{token}/sendRichMessage"
-    payload = {
-        "chat_id": chat_id,
-        "rich_message": {"html": html},
-    }
+    payload = {"chat_id": chat_id, "rich_message": {"html": html}}
     api_kb = _kb_to_api(reply_markup)
     if api_kb:
         payload["reply_markup"] = api_kb
@@ -88,7 +82,7 @@ async def send_rich(chat_id, html: str, reply_markup=None):
         return False
 
 
-# ---------- Card HTML builders ----------
+# ---------- HTML cards with slideshow + in-message buttons ----------
 
 def html_start(name: str, mode: str) -> str:
     return f"""
@@ -96,13 +90,22 @@ def html_start(name: str, mode: str) -> str:
 <p>👋 Hello <b>{name}</b>!</p>
 <p>🔐 Mode : <code>{mode}</code></p>
 <hr/>
-<p>🎵 <b>Music</b><br/><code>/song</code> <code>/yt</code> — name or link</p>
-<p>🎬 <b>Movies</b><br/><code>/play</code> <code>/movie</code> — name</p>
-<p>🔞 <b>Adult</b><br/><code>/adult</code> <code>/xxx</code> — query</p>
-<p>⏯ <b>Controls</b><br/><code>/skip</code> <code>/pause</code> <code>/resume</code> <code>/stop</code> <code>/queue</code></p>
-<p>🔐 <b>Owner</b><br/><code>/mode public</code> | <code>private</code></p>
+<p>🎵 <b>Music</b> — <code>/song</code> <code>/yt</code></p>
+<p>🎬 <b>Movies</b> — <code>/play</code> <code>/movie</code></p>
+<p>🔞 <b>Adult</b> — <code>/adult</code> <code>/xxx</code></p>
+<p>⏯ <b>Controls</b> — <code>/skip</code> <code>/pause</code> <code>/resume</code> <code>/stop</code> <code>/queue</code></p>
+<p>🔐 <b>Owner</b> — <code>/mode public</code> | <code>private</code></p>
 <hr/>
-<p>😌 Sit back, relax &amp; enjoy the music</p>
+<blockquote>😌 Sit back, relax &amp; enjoy the music</blockquote>
+<tg-button-row>
+  <tg-button type="callback_data" data="help|song" style="primary">🎵 Song</tg-button>
+  <tg-button type="callback_data" data="help|movie" style="success">🎬 Movie</tg-button>
+  <tg-button type="callback_data" data="help|adult" style="danger">🔞 Adult</tg-button>
+</tg-button-row>
+<tg-button-row>
+  <tg-button type="callback_data" data="help|ctrl">⏯ Controls</tg-button>
+  <tg-button type="callback_data" data="help|full">📖 Help</tg-button>
+</tg-button-row>
 """.strip()
 
 
@@ -116,6 +119,11 @@ def html_help(mode: str) -> str:
 <p>🔞 <b>Adult</b> — <code>/adult</code> <code>/xxx</code></p>
 <p>⏯ <b>Controls</b> — <code>/skip</code> <code>/pause</code> <code>/resume</code> <code>/stop</code> <code>/queue</code></p>
 <p>🔐 <b>Owner</b> — <code>/mode public|private</code></p>
+<tg-button-row>
+  <tg-button type="callback_data" data="help|song" style="primary">🎵 Song</tg-button>
+  <tg-button type="callback_data" data="help|movie" style="success">🎬 Movie</tg-button>
+  <tg-button type="callback_data" data="help|adult" style="danger">🔞 Adult</tg-button>
+</tg-button-row>
 """.strip()
 
 
@@ -127,7 +135,12 @@ def html_now_playing(title, duration=0, requester="User", queued=False, thumb=""
 
     media = ""
     if thumb and str(thumb).startswith("http"):
-        media = f'<tg-slideshow><img src="{thumb}"/><figcaption>{title}</figcaption></tg-slideshow>'
+        media = f"""
+<tg-slideshow>
+  <img src="{thumb}"/>
+  <figcaption>{title}</figcaption>
+</tg-slideshow>
+""".strip()
 
     if queued:
         return f"""
@@ -147,6 +160,15 @@ def html_now_playing(title, duration=0, requester="User", queued=False, thumb=""
 <blockquote><code>{bar}</code></blockquote>
 <p>🎶 Your track is now playing<br/>
 😌 Sit back, relax &amp; enjoy the music</p>
+<tg-button-row>
+  <tg-button type="callback_data" data="ctl|replay" style="primary">↻ Replay</tg-button>
+  <tg-button type="callback_data" data="ctl|pause" style="success">Ⅱ Pause</tg-button>
+  <tg-button type="callback_data" data="ctl|skip">≫ Skip</tg-button>
+</tg-button-row>
+<tg-button-row>
+  <tg-button type="callback_data" data="ctl|queue">☰ Queue</tg-button>
+  <tg-button type="callback_data" data="ctl|stop" style="danger">⏹ Stop</tg-button>
+</tg-button-row>
 """.strip()
 
 
@@ -158,7 +180,7 @@ def html_search(kind: str, query: str = "", count: int = 0) -> str:
 <h3>{icon} {kind} Results</h3>
 <p>🔎 Query : <code>{clean_name(query)}</code><br/>
 📊 Found : <b>{count}</b></p>
-<p>👇 Choose one below</p>
+<blockquote>👇 Choose one from the buttons below</blockquote>
 """.strip()
     return f"""
 <h3>{icon} Searching {kind}...</h3>
@@ -171,14 +193,15 @@ def html_download(title: str, quality: str = "") -> str:
     return f"""
 <h3>⬇️ Downloading</h3>
 <p><code>{clean_name(title)[:55]}</code>{q}</p>
-<p>⏳ This may take a while...</p>
+<blockquote>⏳ This may take a while...</blockquote>
 """.strip()
 
 
 def html_queue(body: str) -> str:
+    safe = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
     return f"""
 <h3>☰ Queue</h3>
-<p>{body.replace(chr(10), '<br/>')}</p>
+<p>{safe}</p>
 """.strip()
 
 
@@ -211,8 +234,6 @@ def html_info(title: str, body: str) -> str:
 <p>{body}</p>
 """.strip()
 
-
-# Plain fallbacks (when rich not supported)
 
 def plain_now_playing(title, duration=0, requester="User", queued=False, queue_len=0, pos=0):
     title = clean_name(title)[:55]
