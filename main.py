@@ -1,6 +1,5 @@
 """
 Music Player + Movie + Adult + YouTube Bot
-Features: skip, pause, resume, queue, public/private mode, yt-dlp YouTube
 """
 
 import asyncio
@@ -19,7 +18,6 @@ from core.stream import (
     skip_stream,
     stop_stream,
     get_queue_text,
-    get_state,
 )
 from core.youtube import search_youtube, get_stream_info
 
@@ -49,6 +47,14 @@ def fmt_duration(sec):
         return "?"
     m, s = divmod(int(sec), 60)
     return f"{m}:{s:02d}"
+
+async def play_yt_result(chat_id, info):
+    """Play downloaded YouTube file (local) or remote URL."""
+    title = (info.get("title") or "YouTube")[:60]
+    if info.get("is_local") or (info.get("path") and os.path.isfile(info.get("path", ""))):
+        path = info.get("path") or info.get("url")
+        return await play_local_file(chat_id, path, title)
+    return await play_remote_url(chat_id, info["url"], title)
 
 if getattr(config, "BOT_TOKEN", None):
     bot = Client("MusicPlayer", api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN, in_memory=True)
@@ -112,8 +118,6 @@ def build_yt_keyboard(items):
         buttons.append([InlineKeyboardButton(label[:58], callback_data=f"yt|{i}")])
     return InlineKeyboardMarkup(buttons) if buttons else None
 
-# ==================== BASIC ====================
-
 @client.on_message(filters.command(["start"], PREFIXES) & ~filters.bot)
 @handle_error
 async def start(_, message: Message):
@@ -135,26 +139,17 @@ async def help_cmd(_, message: Message):
     mode = "Public" if BOT_PUBLIC else "Private"
     await message.reply_text(
         f"**Commands** (Mode: {mode})\n\n"
-        "🎵 **YouTube Music**\n"
-        "/song <name> or /yt <name>\n"
-        "/music <name>\n\n"
-        "🎬 **Movies**\n"
-        "/play <name> /movie <name>\n\n"
-        "🔞 **Adult**\n"
-        "/adult or /xxx <query>\n\n"
-        "⏯ **Controls**\n"
-        "/skip /next · /pause · /resume\n"
-        "/stop · /queue /q\n\n"
-        "🔐 **Owner**\n"
-        "/mode public | private"
+        "🎵 **YouTube Music**\n/song <name> or /yt <name>\n/music <name>\n\n"
+        "🎬 **Movies**\n/play <name> /movie <name>\n\n"
+        "🔞 **Adult**\n/adult or /xxx <query>\n\n"
+        "⏯ **Controls**\n/skip /next · /pause · /resume\n/stop · /queue /q\n\n"
+        "🔐 **Owner**\n/mode public | private"
     )
 
 @client.on_message(filters.command("ping", PREFIXES) & ~filters.bot)
 @handle_error
 async def ping(_, message: Message):
     await message.reply_text("🤖 **Pong!**")
-
-# ==================== MODE ====================
 
 @client.on_message(filters.command("mode", PREFIXES) & ~filters.bot)
 @handle_error
@@ -174,8 +169,6 @@ async def mode_cmd(_, message: Message):
     else:
         status = "🌐 Public" if BOT_PUBLIC else "🔒 Private"
         await message.reply_text(f"Current mode: **{status}**\n\n/mode public\n/mode private")
-
-# ==================== CONTROLS ====================
 
 @client.on_message(filters.command(["skip", "next"], PREFIXES) & ~filters.private)
 @handle_error
@@ -221,8 +214,6 @@ async def queue_cmd(_, message: Message):
         return
     await message.reply_text(get_queue_text(message.chat.id))
 
-# ==================== YOUTUBE MUSIC ====================
-
 @client.on_message(filters.command(["song", "yt", "music", "s"], PREFIXES) & ~filters.private)
 @register
 @handle_error
@@ -238,15 +229,14 @@ async def song_cmd(_, message: Message):
 
     status = await message.reply_text("🔍 Searching YouTube...")
 
-    # Direct link?
     if "youtube.com" in query or "youtu.be" in query:
-        await status.edit_text("⬇️ Getting stream...")
+        await status.edit_text("⬇️ Downloading from YouTube...")
         info = await get_stream_info(query)
         if not info:
-            await status.edit_text("❌ Could not get stream. Try another link.")
+            await status.edit_text("❌ Download failed. Try another link or song.")
             return
         await status.edit_text(f"▶️ Playing **{info['title'][:50]}**...")
-        ok, msg = await play_remote_url(message.chat.id, info["url"], info["title"][:60])
+        ok, msg = await play_yt_result(message.chat.id, info)
         await status.edit_text(f"{'✅' if ok else '❌'} {msg}")
         return
 
@@ -274,15 +264,15 @@ async def yt_callback(_, callback: CallbackQuery):
         return
 
     item = results[idx]
-    await callback.answer("Loading...")
-    status = await callback.message.reply_text(f"⬇️ Getting stream:\n**{item['title'][:50]}**")
+    await callback.answer("Downloading...")
+    status = await callback.message.reply_text(f"⬇️ Downloading:\n**{item['title'][:50]}**")
 
     info = await get_stream_info(item["url"])
     if not info:
-        await status.edit_text("❌ Failed to get stream URL. Try another.")
+        await status.edit_text("❌ Download failed. Try another song.")
         return
 
-    ok, msg = await play_remote_url(chat_id, info["url"], info["title"][:60])
+    ok, msg = await play_yt_result(chat_id, info)
     if ok:
         await status.edit_text(
             f"✅ **{msg}**\n"
@@ -291,8 +281,6 @@ async def yt_callback(_, callback: CallbackQuery):
         )
     else:
         await status.edit_text(f"❌ {msg}")
-
-# ==================== MOVIES ====================
 
 @client.on_message(filters.command(["movie", "mv"], PREFIXES) & ~filters.private)
 @register
@@ -338,8 +326,6 @@ async def play_cmd(_, message: Message):
         return
     await status.edit_text(f"No movie found.\nTry /song {query} for YouTube music.")
 
-# ==================== ADULT ====================
-
 @client.on_message(filters.command(["adult", "xxx", "nsfw"], PREFIXES) & ~filters.private)
 @register
 @handle_error
@@ -361,8 +347,6 @@ async def adult_cmd(_, message: Message):
     adult_cache[message.chat.id] = {"items": items, "page": 0}
     text = f"🔞 **Adult Search**\n\nFound **{len(items)}** results for: `{query}`\n\nChoose a video:"
     await status.edit_text(text, reply_markup=build_adult_keyboard(items, 0))
-
-# ==================== CALLBACKS ====================
 
 @client.on_callback_query(filters.regex(r"^mvpage\|"))
 @handle_error
@@ -485,6 +469,6 @@ async def adult_callback(_, callback: CallbackQuery):
     success, msg = await play_local_file(chat_id, local_path, title[:40])
     await status.edit_text(f"{'✅' if success else '❌'} **{msg}**\n📦 {size:.1f} MB")
 
-print("Bot loaded: YouTube + Movie + Adult + Controls")
+print("Bot loaded: YouTube download + Movie + Adult + Controls")
 if __name__ == "__main__":
     client.run()
