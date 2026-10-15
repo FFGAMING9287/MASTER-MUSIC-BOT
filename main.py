@@ -1,5 +1,5 @@
 """
-Music Player bot - rich Now Playing + real duration
+Music Player bot - Game Over style Now Playing card
 """
 
 import asyncio
@@ -21,7 +21,12 @@ from core.stream import (
     get_state,
 )
 from core.youtube import search_youtube, get_stream_info
-from core.rich_ui import send_rich_now_playing, plain_now_playing, clean_name
+from core.rich_ui import (
+    send_rich_now_playing,
+    send_photo_now_playing,
+    plain_now_playing,
+    clean_name,
+)
 from core.duration import duration_from_file, duration_from_item
 
 movie_cache = {}
@@ -66,12 +71,13 @@ def requester_name(user):
     name = (user.first_name or "") + ((" " + user.last_name) if user.last_name else "")
     return clean_name(name) or "User"
 
-def build_player_keyboard(paused=False):
+def build_player_keyboard(paused=False, queue_len=0):
     mid = (
-        InlineKeyboardButton("▶ Resume", callback_data="ctl|resume")
-        if paused
-        else InlineKeyboardButton("Ⅱ Pause", callback_data="ctl|pause")
+        InlineKeyboardButton("Ⅱ Pause", callback_data="ctl|pause")
+        if not paused
+        else InlineKeyboardButton("▶ Resume", callback_data="ctl|resume")
     )
+    qlabel = f"☰ Queue · {queue_len}"
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("↻ Replay", callback_data="ctl|replay"),
@@ -79,7 +85,7 @@ def build_player_keyboard(paused=False):
             InlineKeyboardButton("≫ Skip", callback_data="ctl|skip"),
         ],
         [
-            InlineKeyboardButton("☰ Queue", callback_data="ctl|queue"),
+            InlineKeyboardButton(qlabel, callback_data="ctl|queue"),
             InlineKeyboardButton("⏹ Stop", callback_data="ctl|stop"),
         ],
     ])
@@ -98,7 +104,22 @@ def start_keyboard():
     ])
 
 async def send_now_playing(chat_id, title, duration=0, requester="User", queued=False, thumb="", edit_msg=None):
-    kb = build_player_keyboard(paused=False)
+    state = get_state(chat_id)
+    qlen = len(state.get("queue") or [])
+    kb = build_player_keyboard(paused=False, queue_len=qlen)
+
+    # 1) Photo + caption (closest to Game Over Musics look)
+    if thumb and str(thumb).startswith("http"):
+        ok = await send_photo_now_playing(chat_id, title, duration, requester, queued, thumb, reply_markup=kb)
+        if ok:
+            if edit_msg:
+                try:
+                    await edit_msg.delete()
+                except Exception:
+                    pass
+            return True
+
+    # 2) Rich message
     ok = await send_rich_now_playing(chat_id, title, duration, requester, queued, thumb, reply_markup=kb)
     if ok:
         if edit_msg:
@@ -107,7 +128,9 @@ async def send_now_playing(chat_id, title, duration=0, requester="User", queued=
             except Exception:
                 pass
         return True
-    text = plain_now_playing(title, duration, requester, queued)
+
+    # 3) Plain text
+    text = plain_now_playing(title, duration, requester, queued, qlen)
     if edit_msg:
         try:
             await edit_msg.edit_text(text, reply_markup=kb)
@@ -231,10 +254,10 @@ async def help_cmd(_, message: Message):
 async def help_callback(_, callback: CallbackQuery):
     section = callback.data.split("|")[1]
     texts = {
-        "song": "🎵 **YouTube Music**\n\n`/song <name>`\n`/yt <link>`\n\nPick a result → plays in VC",
-        "movie": "🎬 **Movies**\n\n`/play <name>`\n`/movie <name>`\n\nChoose episode + quality → VC",
-        "adult": "🔞 **Adult**\n\n`/adult <query>`\n`/xxx <query>`\n\nChoose quality → plays in VC",
-        "ctrl": "⏯ **Controls**\n\n`/skip` `/pause` `/resume`\n`/stop` `/queue`",
+        "song": "🎵 **YouTube Music**\n\n`/song <name>`\n`/yt <link>`",
+        "movie": "🎬 **Movies**\n\n`/play <name>`\n`/movie <name>`",
+        "adult": "🔞 **Adult**\n\n`/adult <query>`\n`/xxx <query>`",
+        "ctrl": "⏯ **Controls**\n\n`/skip` `/pause` `/resume` `/stop` `/queue`",
         "full": "📖 **Full Help**\n\n🎵 `/song` `/yt`\n🎬 `/play` `/movie`\n🔞 `/adult` `/xxx`\n⏯ `/skip` `/pause` `/resume` `/stop` `/queue`\n🔐 `/mode public|private`",
     }
     text = texts.get(section, texts["full"])
@@ -247,7 +270,7 @@ async def help_callback(_, callback: CallbackQuery):
 @client.on_message(filters.command("ping", PREFIXES) & ~filters.bot)
 @handle_error
 async def ping(_, message: Message):
-    await message.reply_text("🤖 **Pong!**\n\n✅ Bot online\n🎧 Ready for Voice Chat")
+    await message.reply_text("🤖 **Pong!**\n\n✅ Bot online")
 
 @client.on_message(filters.command("mode", PREFIXES) & ~filters.bot)
 @handle_error
@@ -264,7 +287,7 @@ async def mode_cmd(_, message: Message):
         await message.reply_text("🔒 **Private Mode ON**")
     else:
         status = "🌐 Public" if BOT_PUBLIC else "🔒 Private"
-        await message.reply_text(f"🔐 **Mode** : `{status}`\n\n`/mode public`\n`/mode private`")
+        await message.reply_text(f"🔐 **Mode** : `{status}`")
 
 @client.on_message(filters.command(["skip", "next"], PREFIXES) & ~filters.private)
 @handle_error
@@ -312,13 +335,15 @@ async def control_callback(_, callback: CallbackQuery):
         return await callback.answer("Private mode", show_alert=True)
     action = callback.data.split("|")[1]
     chat_id = callback.message.chat.id
+    state = get_state(chat_id)
+    qlen = len(state.get("queue") or [])
 
     if action == "pause":
         ok, msg = await pause_stream(chat_id)
         await callback.answer(msg[:180] if msg else "Paused")
         if ok:
             try:
-                await callback.message.edit_reply_markup(build_player_keyboard(paused=True))
+                await callback.message.edit_reply_markup(build_player_keyboard(paused=True, queue_len=qlen))
             except Exception:
                 pass
     elif action == "resume":
@@ -326,7 +351,7 @@ async def control_callback(_, callback: CallbackQuery):
         await callback.answer(msg[:180] if msg else "Resumed")
         if ok:
             try:
-                await callback.message.edit_reply_markup(build_player_keyboard(paused=False))
+                await callback.message.edit_reply_markup(build_player_keyboard(paused=False, queue_len=qlen))
             except Exception:
                 pass
     elif action == "skip":
@@ -341,7 +366,6 @@ async def control_callback(_, callback: CallbackQuery):
         await callback.answer()
         await callback.message.reply_text(f"☰ **Queue**\n\n{get_queue_text(chat_id)}")
     elif action == "replay":
-        state = get_state(chat_id)
         path = state.get("path")
         title = state.get("title") or "Track"
         if not path:
@@ -586,6 +610,7 @@ async def adult_callback(_, callback: CallbackQuery):
     title = item.get("title", "Video")
     quality = item.get("quality", "?")
     download_url = item.get("downloadUrl") or item.get("download_url")
+    thumb = item.get("thumbnail") or item.get("thumb") or item.get("image") or ""
     if not download_url:
         return await callback.message.reply_text("❌ No download link.")
 
@@ -601,10 +626,9 @@ async def adult_callback(_, callback: CallbackQuery):
     success, msg = await play_local_file(chat_id, local_path, title[:40])
     if not success:
         return await status.edit_text(f"❌ {msg}")
-    # Prefer API duration, else read from file
     dur = duration_from_item(item) or await duration_from_file(local_path)
-    await send_now_playing(chat_id, title[:50], dur, req, "queue" in msg.lower(), edit_msg=status)
+    await send_now_playing(chat_id, title[:50], dur, req, "queue" in msg.lower(), thumb=thumb, edit_msg=status)
 
-print("Bot loaded: real track duration")
+print("Bot loaded: Game Over style Now Playing")
 if __name__ == "__main__":
     client.run()
