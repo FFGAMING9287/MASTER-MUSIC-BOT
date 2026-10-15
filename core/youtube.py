@@ -1,6 +1,6 @@
 """
 YouTube search + stream URL extraction with yt-dlp
-Tries cookies + multiple player clients to bypass bot detection.
+Cookies + multi client + flexible formats
 """
 
 import asyncio
@@ -15,6 +15,13 @@ PLAYER_CLIENTS = [
     "web",
 ]
 
+# Flexible formats - avoid "format not available"
+FORMATS = [
+    "bestaudio/best",
+    "best",
+    "worstaudio/worst",
+]
+
 BASE_OPTS = {
     "quiet": True,
     "no_warnings": True,
@@ -26,7 +33,6 @@ BASE_OPTS = {
 
 
 def _find_cookies():
-    """Find cookies.txt in common locations."""
     candidates = [
         os.path.join(os.getcwd(), "cookies.txt"),
         os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cookies.txt"),
@@ -48,6 +54,23 @@ def _base_opts():
     if cookies:
         opts["cookiefile"] = cookies
     return opts
+
+
+def _pick_stream_url(info):
+    if not info:
+        return None
+    stream_url = info.get("url")
+    if stream_url:
+        return stream_url
+    formats = info.get("formats") or []
+    # Prefer any format with a direct URL and audio
+    for f in reversed(formats):
+        if f.get("url") and (f.get("acodec") or "none") != "none":
+            return f["url"]
+    for f in reversed(formats):
+        if f.get("url"):
+            return f["url"]
+    return None
 
 
 def _search_sync(query: str, limit: int = 5):
@@ -82,33 +105,26 @@ def _search_sync(query: str, limit: int = 5):
     return results
 
 
-def _extract_with_client(url: str, client: str):
+def _extract_once(url: str, client: str, fmt: str):
     opts = _base_opts()
-    opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
+    opts["format"] = fmt
     opts["extractor_args"] = {"youtube": {"player_client": [client]}}
     try:
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            if not info:
-                return None
-            stream_url = info.get("url")
-            if not stream_url and info.get("formats"):
-                for f in reversed(info["formats"]):
-                    if f.get("url") and (f.get("acodec") or "none") != "none":
-                        stream_url = f["url"]
-                        break
+            stream_url = _pick_stream_url(info)
             if not stream_url:
                 return None
             return {
                 "url": stream_url,
-                "title": info.get("title") or "YouTube",
-                "duration": info.get("duration") or 0,
-                "uploader": info.get("uploader") or "",
-                "thumb": info.get("thumbnail") or "",
-                "webpage": info.get("webpage_url") or url,
+                "title": (info or {}).get("title") or "YouTube",
+                "duration": (info or {}).get("duration") or 0,
+                "uploader": (info or {}).get("uploader") or "",
+                "thumb": (info or {}).get("thumbnail") or "",
+                "webpage": (info or {}).get("webpage_url") or url,
             }
     except Exception as e:
-        print(f"YT client={client} error: {e}")
+        print(f"YT client={client} fmt={fmt}: {e}")
         return None
 
 
@@ -118,32 +134,28 @@ def _get_stream_url_sync(url: str):
         url = f"https://www.youtube.com/watch?v={vid}"
 
     for client in PLAYER_CLIENTS:
-        result = _extract_with_client(url, client)
-        if result:
-            print(f"YT stream OK with client={client}")
-            return result
+        for fmt in FORMATS:
+            result = _extract_once(url, client, fmt)
+            if result:
+                print(f"YT OK client={client} fmt={fmt}")
+                return result
 
+    # Final fallback - no client override
     opts = _base_opts()
-    opts["format"] = "bestaudio/best"
+    opts["format"] = "best"
     try:
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            if info:
-                stream_url = info.get("url")
-                if not stream_url and info.get("formats"):
-                    for f in reversed(info["formats"]):
-                        if f.get("url") and (f.get("acodec") or "none") != "none":
-                            stream_url = f["url"]
-                            break
-                if stream_url:
-                    return {
-                        "url": stream_url,
-                        "title": info.get("title") or "YouTube",
-                        "duration": info.get("duration") or 0,
-                        "uploader": info.get("uploader") or "",
-                        "thumb": info.get("thumbnail") or "",
-                        "webpage": info.get("webpage_url") or url,
-                    }
+            stream_url = _pick_stream_url(info)
+            if stream_url:
+                return {
+                    "url": stream_url,
+                    "title": (info or {}).get("title") or "YouTube",
+                    "duration": (info or {}).get("duration") or 0,
+                    "uploader": (info or {}).get("uploader") or "",
+                    "thumb": (info or {}).get("thumbnail") or "",
+                    "webpage": (info or {}).get("webpage_url") or url,
+                }
     except Exception as e:
         print(f"YT final error: {e}")
 
