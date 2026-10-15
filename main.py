@@ -1,5 +1,5 @@
 """
-Music Player bot - rich Now Playing + single keyboard
+Music Player bot - rich Now Playing + real duration
 """
 
 import asyncio
@@ -22,6 +22,7 @@ from core.stream import (
 )
 from core.youtube import search_youtube, get_stream_info
 from core.rich_ui import send_rich_now_playing, plain_now_playing, clean_name
+from core.duration import duration_from_file, duration_from_item
 
 movie_cache = {}
 adult_cache = {}
@@ -97,10 +98,7 @@ def start_keyboard():
     ])
 
 async def send_now_playing(chat_id, title, duration=0, requester="User", queued=False, thumb="", edit_msg=None):
-    """Prefer rich card + ONE keyboard. Fallback to plain."""
     kb = build_player_keyboard(paused=False)
-
-    # Try rich message first (with keyboard under it)
     ok = await send_rich_now_playing(chat_id, title, duration, requester, queued, thumb, reply_markup=kb)
     if ok:
         if edit_msg:
@@ -109,8 +107,6 @@ async def send_now_playing(chat_id, title, duration=0, requester="User", queued=
             except Exception:
                 pass
         return True
-
-    # Fallback: plain markdown + keyboard
     text = plain_now_playing(title, duration, requester, queued)
     if edit_msg:
         try:
@@ -238,8 +234,8 @@ async def help_callback(_, callback: CallbackQuery):
         "song": "🎵 **YouTube Music**\n\n`/song <name>`\n`/yt <link>`\n\nPick a result → plays in VC",
         "movie": "🎬 **Movies**\n\n`/play <name>`\n`/movie <name>`\n\nChoose episode + quality → VC",
         "adult": "🔞 **Adult**\n\n`/adult <query>`\n`/xxx <query>`\n\nChoose quality → plays in VC",
-        "ctrl": "⏯ **Controls**\n\n`/skip` `/pause` `/resume`\n`/stop` `/queue`\n\nButtons on Now Playing also work",
-        "full": f"📖 **Full Help**\n\n🎵 `/song` `/yt`\n🎬 `/play` `/movie`\n🔞 `/adult` `/xxx`\n⏯ `/skip` `/pause` `/resume` `/stop` `/queue`\n🔐 `/mode public|private`",
+        "ctrl": "⏯ **Controls**\n\n`/skip` `/pause` `/resume`\n`/stop` `/queue`",
+        "full": "📖 **Full Help**\n\n🎵 `/song` `/yt`\n🎬 `/play` `/movie`\n🔞 `/adult` `/xxx`\n⏯ `/skip` `/pause` `/resume` `/stop` `/queue`\n🔐 `/mode public|private`",
     }
     text = texts.get(section, texts["full"])
     await callback.answer()
@@ -262,10 +258,10 @@ async def mode_cmd(_, message: Message):
     arg = extract_args(message.text).lower().strip()
     if arg in ("public", "on", "open"):
         BOT_PUBLIC = True
-        await message.reply_text("🌐 **Public Mode ON**\n\nEveryone can use the bot.")
+        await message.reply_text("🌐 **Public Mode ON**")
     elif arg in ("private", "off", "lock"):
         BOT_PUBLIC = False
-        await message.reply_text("🔒 **Private Mode ON**\n\nOnly owner can use features.")
+        await message.reply_text("🔒 **Private Mode ON**")
     else:
         status = "🌐 Public" if BOT_PUBLIC else "🔒 Private"
         await message.reply_text(f"🔐 **Mode** : `{status}`\n\n`/mode public`\n`/mode private`")
@@ -356,7 +352,8 @@ async def control_callback(_, callback: CallbackQuery):
             ok, msg = await play_remote_url(chat_id, path, title, force=True)
         await callback.answer("Replaying..." if ok else (msg or "")[:180])
         if ok:
-            await send_now_playing(chat_id, title, 0, requester_name(callback.from_user))
+            dur = await duration_from_file(path) if os.path.isfile(str(path)) else 0
+            await send_now_playing(chat_id, title, dur, requester_name(callback.from_user))
     else:
         await callback.answer()
 
@@ -383,7 +380,7 @@ async def song_cmd(_, message: Message):
             return await status.edit_text(f"❌ {msg}")
         await send_now_playing(
             message.chat.id, info.get("title", "YouTube"),
-            info.get("duration"), req, "queue" in msg.lower(),
+            info.get("duration") or 0, req, "queue" in msg.lower(),
             info.get("thumb", ""), edit_msg=status,
         )
         return
@@ -419,10 +416,10 @@ async def yt_callback(_, callback: CallbackQuery):
     ok, msg = await play_yt_result(chat_id, info)
     if not ok:
         return await status.edit_text(f"❌ {msg}")
+    dur = info.get("duration") or item.get("duration") or 0
     await send_now_playing(
         chat_id, info.get("title", item["title"]),
-        info.get("duration") or item.get("duration"), req,
-        "queue" in msg.lower(), item.get("thumb", ""), edit_msg=status,
+        dur, req, "queue" in msg.lower(), item.get("thumb", ""), edit_msg=status,
     )
 
 @client.on_message(filters.command(["movie", "mv"], PREFIXES) & ~filters.private)
@@ -568,7 +565,8 @@ async def movie_callback(_, callback: CallbackQuery):
     success, msg = await play_local_file(chat_id, local_path, f"{title} S{season}E{episode}")
     if not success:
         return await status.edit_text(f"❌ {msg}")
-    await send_now_playing(chat_id, f"{title} S{season}E{episode}", 0, req, "queue" in msg.lower(), edit_msg=status)
+    dur = await duration_from_file(local_path)
+    await send_now_playing(chat_id, f"{title} S{season}E{episode}", dur, req, "queue" in msg.lower(), edit_msg=status)
 
 @client.on_callback_query(filters.regex(r"^ad\|"))
 @handle_error
@@ -603,8 +601,10 @@ async def adult_callback(_, callback: CallbackQuery):
     success, msg = await play_local_file(chat_id, local_path, title[:40])
     if not success:
         return await status.edit_text(f"❌ {msg}")
-    await send_now_playing(chat_id, title[:50], 0, req, "queue" in msg.lower(), edit_msg=status)
+    # Prefer API duration, else read from file
+    dur = duration_from_item(item) or await duration_from_file(local_path)
+    await send_now_playing(chat_id, title[:50], dur, req, "queue" in msg.lower(), edit_msg=status)
 
-print("Bot loaded: rich card + single keyboard")
+print("Bot loaded: real track duration")
 if __name__ == "__main__":
     client.run()
