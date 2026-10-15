@@ -1,26 +1,14 @@
 """
-YouTube search + stream URL extraction with yt-dlp
-Cookies + multi client + flexible formats
+YouTube search + download with yt-dlp
+Downloads audio to disk (more reliable than stream URL in 2026)
 """
 
 import asyncio
 import os
+import tempfile
 from yt_dlp import YoutubeDL
 
-PLAYER_CLIENTS = [
-    "android",
-    "ios",
-    "tv",
-    "mweb",
-    "web",
-]
-
-# Flexible formats - avoid "format not available"
-FORMATS = [
-    "bestaudio/best",
-    "best",
-    "worstaudio/worst",
-]
+PLAYER_CLIENTS = ["android", "ios", "tv", "mweb", "web"]
 
 BASE_OPTS = {
     "quiet": True,
@@ -30,6 +18,9 @@ BASE_OPTS = {
     "noplaylist": True,
     "source_address": "0.0.0.0",
 }
+
+DOWNLOADS_DIR = os.path.join(os.getcwd(), "downloads")
+os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
 
 def _find_cookies():
@@ -56,23 +47,6 @@ def _base_opts():
     return opts
 
 
-def _pick_stream_url(info):
-    if not info:
-        return None
-    stream_url = info.get("url")
-    if stream_url:
-        return stream_url
-    formats = info.get("formats") or []
-    # Prefer any format with a direct URL and audio
-    for f in reversed(formats):
-        if f.get("url") and (f.get("acodec") or "none") != "none":
-            return f["url"]
-    for f in reversed(formats):
-        if f.get("url"):
-            return f["url"]
-    return None
-
-
 def _search_sync(query: str, limit: int = 5):
     opts = _base_opts()
     opts["extract_flat"] = "in_playlist"
@@ -83,21 +57,16 @@ def _search_sync(query: str, limit: int = 5):
             info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
             if not info:
                 return []
-            entries = info.get("entries") or []
-            for e in entries:
+            for e in (info.get("entries") or []):
                 if not e:
                     continue
                 vid = e.get("id") or ""
-                title = e.get("title") or "Unknown"
-                duration = e.get("duration") or 0
-                uploader = e.get("uploader") or e.get("channel") or ""
-                url = e.get("url") or e.get("webpage_url") or f"https://www.youtube.com/watch?v={vid}"
                 results.append({
                     "id": vid,
-                    "title": title,
-                    "duration": duration,
-                    "uploader": uploader,
-                    "url": url,
+                    "title": e.get("title") or "Unknown",
+                    "duration": e.get("duration") or 0,
+                    "uploader": e.get("uploader") or e.get("channel") or "",
+                    "url": e.get("url") or e.get("webpage_url") or f"https://www.youtube.com/watch?v={vid}",
                     "thumb": e.get("thumbnail") or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
                 })
     except Exception as e:
@@ -105,61 +74,130 @@ def _search_sync(query: str, limit: int = 5):
     return results
 
 
-def _extract_once(url: str, client: str, fmt: str):
-    opts = _base_opts()
-    opts["format"] = fmt
-    opts["extractor_args"] = {"youtube": {"player_client": [client]}}
-    try:
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            stream_url = _pick_stream_url(info)
-            if not stream_url:
-                return None
-            return {
-                "url": stream_url,
-                "title": (info or {}).get("title") or "YouTube",
-                "duration": (info or {}).get("duration") or 0,
-                "uploader": (info or {}).get("uploader") or "",
-                "thumb": (info or {}).get("thumbnail") or "",
-                "webpage": (info or {}).get("webpage_url") or url,
-            }
-    except Exception as e:
-        print(f"YT client={client} fmt={fmt}: {e}")
-        return None
-
-
-def _get_stream_url_sync(url: str):
+def _download_sync(url: str):
+    """Download best audio to downloads/ and return path + meta."""
     if "youtu.be/" in url:
         vid = url.split("youtu.be/")[-1].split("?")[0].split("&")[0]
         url = f"https://www.youtube.com/watch?v={vid}"
 
-    for client in PLAYER_CLIENTS:
-        for fmt in FORMATS:
-            result = _extract_once(url, client, fmt)
-            if result:
-                print(f"YT OK client={client} fmt={fmt}")
-                return result
+    outtmpl = os.path.join(DOWNLOADS_DIR, "%(id)s.%(ext)s")
 
-    # Final fallback - no client override
-    opts = _base_opts()
-    opts["format"] = "best"
-    try:
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            stream_url = _pick_stream_url(info)
-            if stream_url:
-                return {
-                    "url": stream_url,
-                    "title": (info or {}).get("title") or "YouTube",
-                    "duration": (info or {}).get("duration") or 0,
-                    "uploader": (info or {}).get("uploader") or "",
-                    "thumb": (info or {}).get("thumbnail") or "",
-                    "webpage": (info or {}).get("webpage_url") or url,
-                }
-    except Exception as e:
-        print(f"YT final error: {e}")
+    for client in PLAYER_CLIENTS:
+        opts = _base_opts()
+        opts.update({
+            "format": "bestaudio/best",
+            "outtmpl": outtmpl,
+            "extractor_args": {"youtube": {"player_client": [client]}},
+            # Prefer audio-only containers
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "m4a",
+                "preferredquality": "192",
+            }],
+            "keepvideo": False,
+        })
+        try:
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if not info:
+                    continue
+                # Find the downloaded file
+                vid = info.get("id") or ""
+                title = info.get("title") or "YouTube"
+                duration = info.get("duration") or 0
+                uploader = info.get("uploader") or ""
+
+                # After FFmpegExtractAudio the file is usually .m4a
+                candidates = [
+                    os.path.join(DOWNLOADS_DIR, f"{vid}.m4a"),
+                    os.path.join(DOWNLOADS_DIR, f"{vid}.webm"),
+                    os.path.join(DOWNLOADS_DIR, f"{vid}.mp3"),
+                    os.path.join(DOWNLOADS_DIR, f"{vid}.opus"),
+                    os.path.join(DOWNLOADS_DIR, f"{vid}.mp4"),
+                ]
+                # Also check what ydl reports
+                requested = info.get("requested_downloads") or []
+                for rd in requested:
+                    fp = rd.get("filepath")
+                    if fp and os.path.isfile(fp):
+                        candidates.insert(0, fp)
+                if info.get("_filename") and os.path.isfile(info["_filename"]):
+                    candidates.insert(0, info["_filename"])
+
+                path = None
+                for c in candidates:
+                    if os.path.isfile(c):
+                        path = c
+                        break
+
+                if path:
+                    print(f"YT download OK client={client} path={path}")
+                    return {
+                        "path": path,
+                        "title": title,
+                        "duration": duration,
+                        "uploader": uploader,
+                        "webpage": info.get("webpage_url") or url,
+                    }
+        except Exception as e:
+            print(f"YT download client={client}: {e}")
+            continue
+
+    # Fallback without postprocessor / with simpler format
+    for client in PLAYER_CLIENTS:
+        opts = _base_opts()
+        opts.update({
+            "format": "best",
+            "outtmpl": outtmpl,
+            "extractor_args": {"youtube": {"player_client": [client]}},
+        })
+        try:
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if not info:
+                    continue
+                vid = info.get("id") or ""
+                title = info.get("title") or "YouTube"
+                path = None
+                for ext in ("m4a", "webm", "mp4", "mp3", "opus", "mkv"):
+                    p = os.path.join(DOWNLOADS_DIR, f"{vid}.{ext}")
+                    if os.path.isfile(p):
+                        path = p
+                        break
+                if info.get("_filename") and os.path.isfile(info["_filename"]):
+                    path = info["_filename"]
+                if path:
+                    print(f"YT download OK (fallback) client={client}")
+                    return {
+                        "path": path,
+                        "title": title,
+                        "duration": info.get("duration") or 0,
+                        "uploader": info.get("uploader") or "",
+                        "webpage": info.get("webpage_url") or url,
+                    }
+        except Exception as e:
+            print(f"YT fallback client={client}: {e}")
+            continue
 
     return None
+
+
+# Keep old name for compatibility - now downloads instead of stream URL
+def _get_stream_url_sync(url: str):
+    result = _download_sync(url)
+    if not result:
+        return None
+    # Map to shape expected by main (url key = local path for play_local_file)
+    return {
+        "url": result["path"],  # local path
+        "path": result["path"],
+        "title": result["title"],
+        "duration": result["duration"],
+        "uploader": result["uploader"],
+        "thumb": "",
+        "webpage": result["webpage"],
+        "is_local": True,
+    }
 
 
 async def search_youtube(query: str, limit: int = 5):
