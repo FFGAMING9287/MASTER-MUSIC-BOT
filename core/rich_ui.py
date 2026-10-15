@@ -1,9 +1,5 @@
 """
-Now Playing card styled like Game Over Musics:
-- Optional thumbnail photo
-- Progress bar
-- Duration as MM:SS MIN
-- Single classic keyboard (no Clone)
+Now Playing card — progress bar helpers + photo/rich send
 """
 
 import re
@@ -36,16 +32,15 @@ def clean_name(text: str) -> str:
 
 
 def progress_bar(duration: int, pos: int = 0) -> str:
-    """Visual bar like: 00:00 ━━━━●━━━━ 03:30"""
     total = max(int(duration or 0), 1)
     pos = max(0, min(int(pos or 0), total))
-    width = 12
+    width = 14
     filled = int((pos / total) * width)
-    bar = "━" * filled + "●" + "─" * (width - filled)
+    bar = "━" * filled + "●" + "─" * max(0, width - filled)
     return f"`{fmt_duration(pos)}  {bar}  {fmt_duration(total)}`"
 
 
-def plain_now_playing(title, duration=0, requester="User", queued=False, queue_len=0):
+def plain_now_playing(title, duration=0, requester="User", queued=False, queue_len=0, pos=0):
     title = clean_name(title)[:55]
     requester = clean_name(requester)
     dur = fmt_duration(duration)
@@ -55,11 +50,10 @@ def plain_now_playing(title, duration=0, requester="User", queued=False, queue_l
             f"🎧 **ADDED TO QUEUE**\n\n"
             f"🎵 **TRACK :** {title}\n"
             f"⏱ **DURATION :** `{dur} MIN`\n"
-            f"👤 **REQUESTED BY :** {requester}\n\n"
-            f"☰ Queue position ready"
+            f"👤 **REQUESTED BY :** {requester}"
         )
 
-    bar = progress_bar(duration, 0)
+    bar = progress_bar(duration, pos)
     return (
         f"🎧 **MUSIC IS PLAYING**\n\n"
         f"🎵 **NOW PLAYING :** {title}\n"
@@ -71,11 +65,11 @@ def plain_now_playing(title, duration=0, requester="User", queued=False, queue_l
     )
 
 
-def build_now_playing_html(title, duration=0, requester="User", queued=False, thumb=""):
+def build_now_playing_html(title, duration=0, requester="User", queued=False, thumb="", pos=0):
     dur = fmt_duration(duration)
     safe_title = clean_name(title)[:80]
     safe_req = clean_name(requester)
-    bar = progress_bar(duration, 0).replace("`", "")
+    bar = progress_bar(duration, pos).replace("`", "")
 
     if queued:
         header = "🎧 Added To Queue"
@@ -137,7 +131,6 @@ async def send_rich_now_playing(chat_id, title, duration=0, requester="User", qu
                 data = await resp.json()
                 if data.get("ok"):
                     return True
-                print(f"sendRichMessage failed: {data}")
                 return False
     except Exception as e:
         print(f"sendRichMessage error: {e}")
@@ -145,13 +138,11 @@ async def send_rich_now_playing(chat_id, title, duration=0, requester="User", qu
 
 
 async def send_photo_now_playing(chat_id, title, duration=0, requester="User", queued=False, thumb="", reply_markup=None):
-    """Send photo + caption (Game Over style) when thumb URL available."""
     token = getattr(config, "BOT_TOKEN", "") or ""
     if not token or not thumb or not str(thumb).startswith("http"):
         return False
 
     caption = plain_now_playing(title, duration, requester, queued)
-    # Telegram caption limit ~1024
     if len(caption) > 1000:
         caption = caption[:997] + "..."
 
@@ -171,9 +162,8 @@ async def send_photo_now_playing(chat_id, title, duration=0, requester="User", q
             async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 data = await resp.json()
                 if data.get("ok"):
-                    print("Photo Now Playing sent OK")
-                    return True
-                print(f"sendPhoto failed: {data}")
+                    # return message id for progress tracking
+                    return data.get("result", {}).get("message_id") or True
                 return False
     except Exception as e:
         print(f"sendPhoto error: {e}")
