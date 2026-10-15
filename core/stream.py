@@ -1,6 +1,7 @@
 """
 Stream helper - play / pause / resume / skip / stop / queue
-Supports local files + remote YouTube stream URLs
+Auto-plays next queued track when current ends.
+Leaves VC if queue is empty.
 """
 
 import os
@@ -8,6 +9,7 @@ from config import config
 from pyrogram import Client
 from yt_dlp import YoutubeDL
 from pytgcalls import PyTgCalls
+from pytgcalls import filters as fl
 from pytgcalls.types.stream import MediaStream
 from pytgcalls.types import AudioQuality, VideoQuality
 from pytgcalls.exceptions import NoActiveGroupCall
@@ -71,8 +73,74 @@ async def _leave_call(chat_id: int):
         pass
     return False
 
+async def _play_next_or_leave(chat_id: int):
+    """Called when stream ends: play next from queue, or leave VC."""
+    state = get_state(chat_id)
+    state["playing"] = False
+    state["paused"] = False
+    state["title"] = None
+    state["path"] = None
+
+    if state["queue"]:
+        next_item = state["queue"].pop(0)
+        is_remote = next_item.get("remote", False)
+        title = next_item.get("title", "Next")
+        try:
+            if is_remote:
+                ok, msg = await play_remote_url(chat_id, next_item["path"], title, force=True)
+            else:
+                ok, msg = await play_local_file(chat_id, next_item["path"], title, force=True)
+            if ok:
+                try:
+                    await app.send_message(
+                        chat_id,
+                        f"⏭ **Auto-playing next**\n🎵 **{title}**\nQueue left: {len(state['queue'])}",
+                    )
+                except Exception:
+                    pass
+                return
+            else:
+                print(f"Auto next failed: {msg}")
+                # try following item
+                await _play_next_or_leave(chat_id)
+                return
+        except Exception as e:
+            print(f"Auto next error: {e}")
+
+    # Queue empty → leave VC
+    await _leave_call(chat_id)
+    try:
+        await app.send_message(
+            chat_id,
+            "⏹ **Queue finished**\nNothing left to play. Bot left the Voice Chat.",
+        )
+    except Exception:
+        pass
+
+# Register stream-end handler (py-tgcalls 2.x)
+try:
+    @pytgcalls.on_update(fl.stream_end())
+    async def _on_stream_end(_, update):
+        chat_id = getattr(update, "chat_id", None)
+        if chat_id is None:
+            return
+        print(f"Stream ended in {chat_id} — auto next / leave")
+        await _play_next_or_leave(chat_id)
+except Exception as e:
+    print(f"Could not register stream_end handler: {e}")
+    # Fallback older decorator style
+    try:
+        @pytgcalls.on_stream_end()
+        async def _on_stream_end_old(_, update):
+            chat_id = getattr(update, "chat_id", None)
+            if chat_id is None:
+                return
+            print(f"Stream ended (old) in {chat_id}")
+            await _play_next_or_leave(chat_id)
+    except Exception as e2:
+        print(f"No stream_end handler available: {e2}")
+
 async def play_local_file(chat_id: int, file_path: str, title: str = "Video", force=False):
-    """Play a local file (movies / adult downloads)."""
     if not os.path.exists(file_path):
         return False, "File not found"
 
@@ -128,7 +196,6 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video", fo
         return False, f"Play error: {str(e)[:180]}"
 
 async def play_remote_url(chat_id: int, stream_url: str, title: str = "YouTube", force=False):
-    """Play a remote stream URL (YouTube via yt-dlp)."""
     state = get_state(chat_id)
 
     if state["playing"] and not force:
@@ -138,12 +205,14 @@ async def play_remote_url(chat_id: int, stream_url: str, title: str = "YouTube",
 
     try:
         await _ensure_started()
-        # Audio-only for music (no forced video quality = less stretch)
-        stream = MediaStream(
-            stream_url,
-            AudioQuality.HIGH,
-            video_flags=MediaStream.Flags.IGNORE,
-        )
+        try:
+            stream = MediaStream(
+                stream_url,
+                AudioQuality.HIGH,
+                video_flags=MediaStream.Flags.IGNORE,
+            )
+        except Exception:
+            stream = MediaStream(stream_url, AudioQuality.HIGH)
         await pytgcalls.play(chat_id, stream)
         state["playing"] = True
         state["paused"] = False
@@ -162,11 +231,14 @@ async def play_remote_url(chat_id: int, stream_url: str, title: str = "YouTube",
                     random_id=app.rnd_id() // 9000000000,
                 )
             )
-            stream = MediaStream(
-                stream_url,
-                AudioQuality.HIGH,
-                video_flags=MediaStream.Flags.IGNORE,
-            )
+            try:
+                stream = MediaStream(
+                    stream_url,
+                    AudioQuality.HIGH,
+                    video_flags=MediaStream.Flags.IGNORE,
+                )
+            except Exception:
+                stream = MediaStream(stream_url, AudioQuality.HIGH)
             await pytgcalls.play(chat_id, stream)
             state["playing"] = True
             state["paused"] = False
@@ -176,7 +248,6 @@ async def play_remote_url(chat_id: int, stream_url: str, title: str = "YouTube",
         except Exception as e2:
             return False, f"No active Voice Chat: {e2}"
     except Exception as e:
-        # Fallback: try without video_flags
         try:
             stream = MediaStream(stream_url, AudioQuality.HIGH)
             await pytgcalls.play(chat_id, stream)
