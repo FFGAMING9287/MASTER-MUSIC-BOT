@@ -1,6 +1,6 @@
 """
 Music Player + Movie + Adult + YouTube Bot
-Rich Message Now Playing UI (Bot API 10.x) + classic fallback
+Fixed format + Pause/Resume toggle
 """
 
 import asyncio
@@ -22,7 +22,7 @@ from core.stream import (
     get_state,
 )
 from core.youtube import search_youtube, get_stream_info
-from core.rich_ui import send_rich_now_playing, plain_now_playing
+from core.rich_ui import send_rich_now_playing, plain_now_playing, clean_name
 
 movie_cache = {}
 adult_cache = {}
@@ -48,17 +48,31 @@ def can_use(user_id: int) -> bool:
 def fmt_duration(sec):
     if not sec:
         return "00:00"
-    m, s = divmod(int(sec), 60)
+    try:
+        sec = int(sec)
+    except Exception:
+        return "00:00"
+    m, s = divmod(sec, 60)
     h, m = divmod(m, 60)
     if h:
         return f"{h:02d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
 
-def build_player_keyboard():
+def requester_name(user):
+    """Plain display name — never HTML mention."""
+    if not user:
+        return "User"
+    if user.username:
+        return f"@{user.username}"
+    name = (user.first_name or "") + ((" " + user.last_name) if user.last_name else "")
+    return clean_name(name) or "User"
+
+def build_player_keyboard(paused=False):
+    mid = InlineKeyboardButton("▶ Resume", callback_data="ctl|resume") if paused else InlineKeyboardButton("Ⅱ Pause", callback_data="ctl|pause")
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("↻ Replay", callback_data="ctl|replay"),
-            InlineKeyboardButton("Ⅱ Pause", callback_data="ctl|pause"),
+            mid,
             InlineKeyboardButton("≫ Skip", callback_data="ctl|skip"),
         ],
         [
@@ -68,7 +82,6 @@ def build_player_keyboard():
     ])
 
 async def send_now_playing(chat_id, title, duration=0, requester="User", queued=False, thumb="", edit_msg=None):
-    """Prefer Rich Message; fallback to classic text + keyboard."""
     ok = await send_rich_now_playing(chat_id, title, duration, requester, queued, thumb)
     if ok:
         if edit_msg:
@@ -79,23 +92,17 @@ async def send_now_playing(chat_id, title, duration=0, requester="User", queued=
         return True
 
     text = plain_now_playing(title, duration, requester, queued)
-    kb = build_player_keyboard()
+    kb = build_player_keyboard(paused=False)
     if edit_msg:
         try:
             await edit_msg.edit_text(text, reply_markup=kb)
             return True
         except Exception:
             pass
-    # send new
-    from core.stream import app as ub
-    client_ref = client
     try:
-        await client_ref.send_message(chat_id, text, reply_markup=kb)
-    except Exception:
-        try:
-            await ub.send_message(chat_id, text)
-        except Exception as e:
-            print(f"send_now_playing fail: {e}")
+        await client.send_message(chat_id, text, reply_markup=kb)
+    except Exception as e:
+        print(f"send_now_playing fail: {e}")
     return False
 
 async def play_yt_result(chat_id, info):
@@ -170,29 +177,22 @@ def build_yt_keyboard(items):
 @client.on_message(filters.command(["start"], PREFIXES) & ~filters.bot)
 @handle_error
 async def start(_, message: Message):
-    name = message.from_user.mention if message.from_user else "User"
+    name = message.from_user.first_name if message.from_user else "User"
     mode = "🌐 Public" if BOT_PUBLIC else "🔒 Private"
     await message.reply_text(
         f"Hello {name}!\n\n**FFGAMING X MUSIC BOT**\nMode: {mode}\n\n"
-        "🎵 /song or /yt <name> - YouTube music\n"
-        "🎬 /play /movie - Movies\n"
-        "🔞 /adult /xxx - Adult\n"
+        "🎵 /song /yt · 🎬 /play /movie · 🔞 /adult\n"
         "⏯ /skip /pause /resume /stop /queue\n"
-        "🔐 /mode public|private (owner)\n"
-        "/help /ping"
+        "🔐 /mode public|private"
     )
 
 @client.on_message(filters.command("help", PREFIXES) & ~filters.bot)
 @handle_error
 async def help_cmd(_, message: Message):
-    mode = "Public" if BOT_PUBLIC else "Private"
     await message.reply_text(
-        f"**Commands** (Mode: {mode})\n\n"
-        "🎵 **YouTube** /song /yt\n"
-        "🎬 **Movies** /play /movie\n"
-        "🔞 **Adult** /adult /xxx\n"
-        "⏯ /skip /pause /resume /stop /queue\n"
-        "🔐 /mode public | private"
+        "**Commands**\n\n"
+        "/song /yt <name>\n/play /movie <name>\n/adult /xxx <query>\n"
+        "/skip /pause /resume /stop /queue\n/mode public|private"
     )
 
 @client.on_message(filters.command("ping", PREFIXES) & ~filters.bot)
@@ -204,9 +204,8 @@ async def ping(_, message: Message):
 @handle_error
 async def mode_cmd(_, message: Message):
     global BOT_PUBLIC
-    user_id = message.from_user.id if message.from_user else 0
-    if not is_owner(user_id):
-        await message.reply_text("❌ Only the bot owner can change mode.")
+    if not is_owner(message.from_user.id if message.from_user else 0):
+        await message.reply_text("❌ Owner only.")
         return
     arg = extract_args(message.text).lower().strip()
     if arg in ("public", "on", "open"):
@@ -216,15 +215,13 @@ async def mode_cmd(_, message: Message):
         BOT_PUBLIC = False
         await message.reply_text("🔒 **Private mode ON**")
     else:
-        status = "🌐 Public" if BOT_PUBLIC else "🔒 Private"
-        await message.reply_text(f"Current mode: **{status}**")
+        await message.reply_text(f"Mode: **{'Public' if BOT_PUBLIC else 'Private'}**")
 
 @client.on_message(filters.command(["skip", "next"], PREFIXES) & ~filters.private)
 @handle_error
 async def skip_cmd(_, message: Message):
     if not can_use(message.from_user.id if message.from_user else 0):
-        await message.reply_text("🔒 Private mode.")
-        return
+        return await message.reply_text("🔒 Private mode.")
     ok, msg = await skip_stream(message.chat.id)
     await message.reply_text(msg)
 
@@ -232,8 +229,7 @@ async def skip_cmd(_, message: Message):
 @handle_error
 async def pause_cmd(_, message: Message):
     if not can_use(message.from_user.id if message.from_user else 0):
-        await message.reply_text("🔒 Private mode.")
-        return
+        return await message.reply_text("🔒 Private mode.")
     ok, msg = await pause_stream(message.chat.id)
     await message.reply_text(msg)
 
@@ -241,8 +237,7 @@ async def pause_cmd(_, message: Message):
 @handle_error
 async def resume_cmd(_, message: Message):
     if not can_use(message.from_user.id if message.from_user else 0):
-        await message.reply_text("🔒 Private mode.")
-        return
+        return await message.reply_text("🔒 Private mode.")
     ok, msg = await resume_stream(message.chat.id)
     await message.reply_text(msg)
 
@@ -250,8 +245,7 @@ async def resume_cmd(_, message: Message):
 @handle_error
 async def stop_cmd(_, message: Message):
     if not can_use(message.from_user.id if message.from_user else 0):
-        await message.reply_text("🔒 Private mode.")
-        return
+        return await message.reply_text("🔒 Private mode.")
     ok, msg = await stop_stream(message.chat.id)
     await message.reply_text(msg)
 
@@ -259,8 +253,7 @@ async def stop_cmd(_, message: Message):
 @handle_error
 async def queue_cmd(_, message: Message):
     if not can_use(message.from_user.id if message.from_user else 0):
-        await message.reply_text("🔒 Private mode.")
-        return
+        return await message.reply_text("🔒 Private mode.")
     await message.reply_text(get_queue_text(message.chat.id))
 
 @client.on_callback_query(filters.regex(r"^ctl\|"))
@@ -276,9 +269,19 @@ async def control_callback(_, callback: CallbackQuery):
     if action == "pause":
         ok, msg = await pause_stream(chat_id)
         await callback.answer(msg[:180] if msg else "Paused")
+        if ok:
+            try:
+                await callback.message.edit_reply_markup(build_player_keyboard(paused=True))
+            except Exception:
+                pass
     elif action == "resume":
         ok, msg = await resume_stream(chat_id)
         await callback.answer(msg[:180] if msg else "Resumed")
+        if ok:
+            try:
+                await callback.message.edit_reply_markup(build_player_keyboard(paused=False))
+            except Exception:
+                pass
     elif action == "skip":
         ok, msg = await skip_stream(chat_id)
         await callback.answer("Skipped" if ok else (msg or "")[:180])
@@ -303,8 +306,7 @@ async def control_callback(_, callback: CallbackQuery):
             ok, msg = await play_remote_url(chat_id, path, title, force=True)
         await callback.answer("Replaying..." if ok else (msg or "")[:180])
         if ok:
-            req = callback.from_user.mention if callback.from_user else "User"
-            await send_now_playing(chat_id, title, 0, req)
+            await send_now_playing(chat_id, title, 0, requester_name(callback.from_user))
     else:
         await callback.answer()
 
@@ -312,86 +314,65 @@ async def control_callback(_, callback: CallbackQuery):
 @register
 @handle_error
 async def song_cmd(_, message: Message):
-    user_id = message.from_user.id if message.from_user else 0
-    if not can_use(user_id):
-        await message.reply_text("🔒 Bot is in **Private mode**.")
-        return
+    if not can_use(message.from_user.id if message.from_user else 0):
+        return await message.reply_text("🔒 Private mode.")
     query = extract_args(message.text)
     if not query:
-        await message.reply_text("Usage: /song <name> or /yt <YouTube link>")
-        return
+        return await message.reply_text("Usage: /song <name> or /yt <link>")
 
     status = await message.reply_text("🔍 Searching YouTube...")
-    requester = message.from_user.mention if message.from_user else "User"
+    req = requester_name(message.from_user)
 
     if "youtube.com" in query or "youtu.be" in query:
         await status.edit_text("⬇️ Getting stream...")
         info = await get_stream_info(query)
         if not info:
-            await status.edit_text("❌ Could not get stream. Try another link.")
-            return
+            return await status.edit_text("❌ Could not get stream.")
         ok, msg = await play_yt_result(message.chat.id, info)
         if not ok:
-            await status.edit_text(f"❌ {msg}")
-            return
-        queued = "queue" in msg.lower()
+            return await status.edit_text(f"❌ {msg}")
         await send_now_playing(
-            message.chat.id,
-            info.get("title", "YouTube"),
-            info.get("duration"),
-            requester,
-            queued,
-            info.get("thumb", ""),
-            edit_msg=status,
+            message.chat.id, info.get("title", "YouTube"),
+            info.get("duration"), req, "queue" in msg.lower(),
+            info.get("thumb", ""), edit_msg=status,
         )
         return
 
     results = await search_youtube(query, limit=6)
     if not results:
-        await status.edit_text("❌ No results found on YouTube.")
-        return
-
+        return await status.edit_text("❌ No results found.")
     yt_cache[message.chat.id] = results
-    text = f"🎵 **YouTube results for:** `{query}`\n\nChoose a song:"
-    await status.edit_text(text, reply_markup=build_yt_keyboard(results))
+    await status.edit_text(
+        f"🎵 **YouTube results for:** `{query}`\n\nChoose a song:",
+        reply_markup=build_yt_keyboard(results),
+    )
 
 @client.on_callback_query(filters.regex(r"^yt\|"))
 @handle_error
 async def yt_callback(_, callback: CallbackQuery):
-    user_id = callback.from_user.id if callback.from_user else 0
-    if not can_use(user_id):
-        await callback.answer("Private mode", show_alert=True)
-        return
+    if not can_use(callback.from_user.id if callback.from_user else 0):
+        return await callback.answer("Private mode", show_alert=True)
     idx = int(callback.data.split("|")[1])
     chat_id = callback.message.chat.id
     results = yt_cache.get(chat_id)
     if not results or idx >= len(results):
-        await callback.answer("Expired", show_alert=True)
-        return
+        return await callback.answer("Expired", show_alert=True)
 
     item = results[idx]
     await callback.answer("Loading...")
     status = await callback.message.reply_text(f"⬇️ Getting stream:\n**{item['title'][:50]}**")
-    requester = callback.from_user.mention if callback.from_user else "User"
+    req = requester_name(callback.from_user)
 
     info = await get_stream_info(item["url"])
     if not info:
-        await status.edit_text("❌ Could not get stream. Try another song.")
-        return
-
+        return await status.edit_text("❌ Could not get stream.")
     ok, msg = await play_yt_result(chat_id, info)
     if not ok:
-        await status.edit_text(f"❌ {msg}")
-        return
-    queued = "queue" in msg.lower()
+        return await status.edit_text(f"❌ {msg}")
     await send_now_playing(
-        chat_id,
-        info.get("title", item["title"]),
-        info.get("duration") or item.get("duration"),
-        requester,
-        queued,
-        item.get("thumb", ""),
-        edit_msg=status,
+        chat_id, info.get("title", item["title"]),
+        info.get("duration") or item.get("duration"), req,
+        "queue" in msg.lower(), item.get("thumb", ""), edit_msg=status,
     )
 
 @client.on_message(filters.command(["movie", "mv"], PREFIXES) & ~filters.private)
@@ -399,40 +380,41 @@ async def yt_callback(_, callback: CallbackQuery):
 @handle_error
 async def movie_cmd(_, message: Message):
     if not can_use(message.from_user.id if message.from_user else 0):
-        await message.reply_text("🔒 Private mode.")
-        return
+        return await message.reply_text("🔒 Private mode.")
     query = extract_args(message.text)
     if not query:
-        await message.reply_text("Usage: /movie <name>")
-        return
+        return await message.reply_text("Usage: /movie <name>")
     status = await message.reply_text("🔍 Searching movies...")
     data = await search_movie(query)
     if not data or not data.get("results"):
-        await status.edit_text("❌ No results found.")
-        return
+        return await status.edit_text("❌ No results found.")
     movie_cache[message.chat.id] = {"data": data, "page": 0}
     result = data["results"][0]
-    text = f"🎬 **{result.get('title')}** ({result.get('year')})\n⭐ {result.get('rating','N/A')}/10\n📺 {len(result.get('episodes',[]))} episodes\n\nChoose episode:"
-    await status.edit_text(text, reply_markup=build_movie_keyboard(data, 0))
+    await status.edit_text(
+        f"🎬 **{result.get('title')}** ({result.get('year')})\n"
+        f"⭐ {result.get('rating','N/A')}/10 · 📺 {len(result.get('episodes',[]))} episodes\n\nChoose episode:",
+        reply_markup=build_movie_keyboard(data, 0),
+    )
 
 @client.on_message(filters.command(["p", "play"], PREFIXES) & ~filters.private)
 @register
 @handle_error
 async def play_cmd(_, message: Message):
     if not can_use(message.from_user.id if message.from_user else 0):
-        await message.reply_text("🔒 Private mode.")
-        return
+        return await message.reply_text("🔒 Private mode.")
     query = extract_args(message.text)
     if not query:
-        await message.reply_text("Usage: /play <name>")
-        return
+        return await message.reply_text("Usage: /play <name>")
     status = await message.reply_text("🔍 Searching...")
     data = await search_movie(query)
     if data and data.get("results"):
         movie_cache[message.chat.id] = {"data": data, "page": 0}
         result = data["results"][0]
-        text = f"🎬 **{result.get('title')}** ({result.get('year')})\n⭐ {result.get('rating','N/A')}/10\n📺 {len(result.get('episodes',[]))} episodes\n\nChoose episode:"
-        await status.edit_text(text, reply_markup=build_movie_keyboard(data, 0))
+        await status.edit_text(
+            f"🎬 **{result.get('title')}** ({result.get('year')})\n"
+            f"⭐ {result.get('rating','N/A')}/10 · 📺 {len(result.get('episodes',[]))} episodes\n\nChoose episode:",
+            reply_markup=build_movie_keyboard(data, 0),
+        )
         return
     await status.edit_text(f"No movie found.\nTry /song {query}")
 
@@ -441,38 +423,35 @@ async def play_cmd(_, message: Message):
 @handle_error
 async def adult_cmd(_, message: Message):
     if not can_use(message.from_user.id if message.from_user else 0):
-        await message.reply_text("🔒 Private mode.")
-        return
+        return await message.reply_text("🔒 Private mode.")
     query = extract_args(message.text)
     if not query:
-        await message.reply_text("Usage: /adult <query>")
-        return
+        return await message.reply_text("Usage: /adult <query>")
     status = await message.reply_text("🔍 Searching adult content...")
     data = await search_adult(query)
     if not data or not data.get("items"):
-        await status.edit_text("❌ No results found.")
-        return
+        return await status.edit_text("❌ No results found.")
     items = data["items"]
     adult_cache[message.chat.id] = {"items": items, "page": 0}
-    text = f"🔞 **Adult Search**\nFound **{len(items)}** results\n\nChoose:"
-    await status.edit_text(text, reply_markup=build_adult_keyboard(items, 0))
+    await status.edit_text(
+        f"🔞 **Adult Search**\nFound **{len(items)}** results\n\nChoose:",
+        reply_markup=build_adult_keyboard(items, 0),
+    )
 
 @client.on_callback_query(filters.regex(r"^mvpage\|"))
 @handle_error
 async def page_callback(_, callback: CallbackQuery):
     if not can_use(callback.from_user.id if callback.from_user else 0):
-        await callback.answer("Private mode", show_alert=True)
-        return
+        return await callback.answer("Private mode", show_alert=True)
     page = int(callback.data.split("|")[1])
     cached = movie_cache.get(callback.message.chat.id)
     if not cached:
-        await callback.answer("Expired")
-        return
+        return await callback.answer("Expired")
     data = cached["data"]
     cached["page"] = page
     result = data["results"][0]
     await callback.message.edit_text(
-        f"🎬 **{result.get('title')}** Page {page+1}",
+        f"🎬 **{result.get('title')}** · Page {page+1}",
         reply_markup=build_movie_keyboard(data, page),
     )
     await callback.answer()
@@ -481,13 +460,11 @@ async def page_callback(_, callback: CallbackQuery):
 @handle_error
 async def adult_page_callback(_, callback: CallbackQuery):
     if not can_use(callback.from_user.id if callback.from_user else 0):
-        await callback.answer("Private mode", show_alert=True)
-        return
+        return await callback.answer("Private mode", show_alert=True)
     page = int(callback.data.split("|")[1])
     cached = adult_cache.get(callback.message.chat.id)
     if not cached:
-        await callback.answer("Expired")
-        return
+        return await callback.answer("Expired")
     items = cached["items"]
     cached["page"] = page
     await callback.message.edit_text(
@@ -500,19 +477,16 @@ async def adult_page_callback(_, callback: CallbackQuery):
 @handle_error
 async def movie_callback(_, callback: CallbackQuery):
     if not can_use(callback.from_user.id if callback.from_user else 0):
-        await callback.answer("Private mode", show_alert=True)
-        return
+        return await callback.answer("Private mode", show_alert=True)
     parts = callback.data.split("|")
     if len(parts) < 6:
-        await callback.answer("Invalid")
-        return
+        return await callback.answer("Invalid")
     _, mid, season, episode, short_lang, quality = parts
-    await callback.answer(f"Downloading...")
+    await callback.answer("Downloading...")
     chat_id = callback.message.chat.id
     cached = movie_cache.get(chat_id)
     if not cached:
-        await callback.message.reply_text("Search expired.")
-        return
+        return await callback.message.reply_text("Search expired.")
     data = cached["data"]
     download_url = None
     title = "Unknown"
@@ -529,63 +503,52 @@ async def movie_callback(_, callback: CallbackQuery):
         if download_url:
             break
     if not download_url:
-        await callback.message.reply_text("❌ Link not found.")
-        return
+        return await callback.message.reply_text("❌ Link not found.")
 
-    requester = callback.from_user.mention if callback.from_user else "User"
+    req = requester_name(callback.from_user)
     status = await callback.message.reply_text(f"⬇️ Downloading **{title}**...")
     filename = f"{title.replace(' ', '_')}_s{season}e{episode}_{quality}.mp4"
     local_path, info = await download_file(download_url, filename)
     if not local_path:
-        await status.edit_text(f"❌ Download failed.\n{info}")
-        return
+        return await status.edit_text(f"❌ Download failed.\n{info}")
     success, msg = await play_local_file(chat_id, local_path, f"{title} S{season}E{episode}")
     if not success:
-        await status.edit_text(f"❌ {msg}")
-        return
-    queued = "queue" in msg.lower()
-    await send_now_playing(chat_id, f"{title} S{season}E{episode}", 0, requester, queued, edit_msg=status)
+        return await status.edit_text(f"❌ {msg}")
+    await send_now_playing(chat_id, f"{title} S{season}E{episode}", 0, req, "queue" in msg.lower(), edit_msg=status)
 
 @client.on_callback_query(filters.regex(r"^ad\|"))
 @handle_error
 async def adult_callback(_, callback: CallbackQuery):
     if not can_use(callback.from_user.id if callback.from_user else 0):
-        await callback.answer("Private mode", show_alert=True)
-        return
+        return await callback.answer("Private mode", show_alert=True)
     parts = callback.data.split("|")
     if len(parts) < 3:
-        await callback.answer("Invalid")
-        return
+        return await callback.answer("Invalid")
     idx = int(parts[2])
     chat_id = callback.message.chat.id
     cached = adult_cache.get(chat_id)
     if not cached or idx >= len(cached["items"]):
-        await callback.answer("Expired")
-        return
+        return await callback.answer("Expired")
 
     item = cached["items"][idx]
     title = item.get("title", "Video")
     quality = item.get("quality", "?")
     download_url = item.get("downloadUrl") or item.get("download_url")
     if not download_url:
-        await callback.message.reply_text("❌ No download link.")
-        return
+        return await callback.message.reply_text("❌ No download link.")
 
     await callback.answer("Downloading...")
-    requester = callback.from_user.mention if callback.from_user else "User"
+    req = requester_name(callback.from_user)
     status = await callback.message.reply_text(f"⬇️ Downloading:\n**{title[:60]}**")
     filename = f"adult_{idx}_{quality}.mp4"
     local_path, info = await download_file(download_url, filename)
     if not local_path:
-        await status.edit_text(f"❌ Download failed.\n{info}")
-        return
+        return await status.edit_text(f"❌ Download failed.\n{info}")
     success, msg = await play_local_file(chat_id, local_path, title[:40])
     if not success:
-        await status.edit_text(f"❌ {msg}")
-        return
-    queued = "queue" in msg.lower()
-    await send_now_playing(chat_id, title[:50], 0, requester, queued, edit_msg=status)
+        return await status.edit_text(f"❌ {msg}")
+    await send_now_playing(chat_id, title[:50], 0, req, "queue" in msg.lower(), edit_msg=status)
 
-print("Bot loaded: Rich UI + auto-queue + Piped YT")
+print("Bot loaded: fixed format + pause/resume toggle")
 if __name__ == "__main__":
     client.run()
