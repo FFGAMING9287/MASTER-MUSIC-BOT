@@ -1,5 +1,6 @@
 """
-Telegram Rich Messages + plain fallback for Now Playing card.
+Rich Message = nice formatted text only.
+Control buttons = classic reply_markup only (one set, Pause/Resume toggles cleanly).
 """
 
 import re
@@ -22,10 +23,8 @@ def fmt_duration(sec):
 
 
 def clean_name(text: str) -> str:
-    """Strip HTML / mention markup to plain name."""
     if not text:
         return "User"
-    # Remove <a href=...>Name</a>
     text = re.sub(r"<a[^>]*>(.*?)</a>", r"\1", text, flags=re.I | re.S)
     text = re.sub(r"<[^>]+>", "", text)
     text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
@@ -59,18 +58,8 @@ def build_now_playing_html(title: str, duration=0, requester: str = "User", queu
     if thumb and str(thumb).startswith("http"):
         media = f'<tg-slideshow><img src="{thumb}"/><figcaption>{safe_title}</figcaption></tg-slideshow><br/>'
 
-    buttons = """
-<tg-button-row>
-  <tg-button type="callback_data" data="ctl|replay" style="primary">↻ Replay</tg-button>
-  <tg-button type="callback_data" data="ctl|pause" style="success">Ⅱ Pause</tg-button>
-  <tg-button type="callback_data" data="ctl|skip">≫ Skip</tg-button>
-</tg-button-row>
-<tg-button-row>
-  <tg-button type="callback_data" data="ctl|queue">☰ Queue</tg-button>
-  <tg-button type="callback_data" data="ctl|stop" style="danger">⏹ Stop</tg-button>
-</tg-button-row>
-"""
-    return f"<h3>{header}</h3>{media}<p>{body}</p>{buttons}"
+    # NO in-message buttons — prevents double keyboard
+    return f"<h3>{header}</h3>{media}<p>{body}</p>"
 
 
 def plain_now_playing(title, duration=0, requester="User", queued=False):

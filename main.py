@@ -1,6 +1,5 @@
 """
-Music Player + Movie + Adult + YouTube Bot
-Fixed format + Pause/Resume toggle
+Music Player bot - single keyboard row, no duplicates
 """
 
 import asyncio
@@ -59,7 +58,6 @@ def fmt_duration(sec):
     return f"{m:02d}:{s:02d}"
 
 def requester_name(user):
-    """Plain display name — never HTML mention."""
     if not user:
         return "User"
     if user.username:
@@ -68,7 +66,11 @@ def requester_name(user):
     return clean_name(name) or "User"
 
 def build_player_keyboard(paused=False):
-    mid = InlineKeyboardButton("▶ Resume", callback_data="ctl|resume") if paused else InlineKeyboardButton("Ⅱ Pause", callback_data="ctl|pause")
+    mid = (
+        InlineKeyboardButton("▶ Resume", callback_data="ctl|resume")
+        if paused
+        else InlineKeyboardButton("Ⅱ Pause", callback_data="ctl|pause")
+    )
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("↻ Replay", callback_data="ctl|replay"),
@@ -82,28 +84,23 @@ def build_player_keyboard(paused=False):
     ])
 
 async def send_now_playing(chat_id, title, duration=0, requester="User", queued=False, thumb="", edit_msg=None):
-    ok = await send_rich_now_playing(chat_id, title, duration, requester, queued, thumb)
-    if ok:
-        if edit_msg:
-            try:
-                await edit_msg.delete()
-            except Exception:
-                pass
-        return True
-
+    """Always use plain text + ONE classic keyboard (no double buttons)."""
     text = plain_now_playing(title, duration, requester, queued)
     kb = build_player_keyboard(paused=False)
+
     if edit_msg:
         try:
             await edit_msg.edit_text(text, reply_markup=kb)
             return True
         except Exception:
             pass
+
     try:
         await client.send_message(chat_id, text, reply_markup=kb)
+        return True
     except Exception as e:
         print(f"send_now_playing fail: {e}")
-    return False
+        return False
 
 async def play_yt_result(chat_id, info):
     title = (info.get("title") or "YouTube")[:60]
@@ -190,8 +187,7 @@ async def start(_, message: Message):
 @handle_error
 async def help_cmd(_, message: Message):
     await message.reply_text(
-        "**Commands**\n\n"
-        "/song /yt <name>\n/play /movie <name>\n/adult /xxx <query>\n"
+        "**Commands**\n/song /yt · /play /movie · /adult\n"
         "/skip /pause /resume /stop /queue\n/mode public|private"
     )
 
@@ -205,8 +201,7 @@ async def ping(_, message: Message):
 async def mode_cmd(_, message: Message):
     global BOT_PUBLIC
     if not is_owner(message.from_user.id if message.from_user else 0):
-        await message.reply_text("❌ Owner only.")
-        return
+        return await message.reply_text("❌ Owner only.")
     arg = extract_args(message.text).lower().strip()
     if arg in ("public", "on", "open"):
         BOT_PUBLIC = True
@@ -261,8 +256,7 @@ async def queue_cmd(_, message: Message):
 async def control_callback(_, callback: CallbackQuery):
     user_id = callback.from_user.id if callback.from_user else 0
     if not can_use(user_id):
-        await callback.answer("Private mode", show_alert=True)
-        return
+        return await callback.answer("Private mode", show_alert=True)
     action = callback.data.split("|")[1]
     chat_id = callback.message.chat.id
 
@@ -298,8 +292,7 @@ async def control_callback(_, callback: CallbackQuery):
         path = state.get("path")
         title = state.get("title") or "Track"
         if not path:
-            await callback.answer("Nothing to replay", show_alert=True)
-            return
+            return await callback.answer("Nothing to replay", show_alert=True)
         if os.path.isfile(str(path)):
             ok, msg = await play_local_file(chat_id, path, title, force=True)
         else:
@@ -549,6 +542,6 @@ async def adult_callback(_, callback: CallbackQuery):
         return await status.edit_text(f"❌ {msg}")
     await send_now_playing(chat_id, title[:50], 0, req, "queue" in msg.lower(), edit_msg=status)
 
-print("Bot loaded: fixed format + pause/resume toggle")
+print("Bot loaded: single keyboard, no duplicates")
 if __name__ == "__main__":
     client.run()
