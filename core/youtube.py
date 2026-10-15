@@ -1,19 +1,24 @@
 """
-YouTube search + download with yt-dlp
-No strict format (avoids 'format not available')
+YouTube download with yt-dlp
+android_vr first (no JS needed), then web clients with cookies
 """
 
 import asyncio
 import os
 from yt_dlp import YoutubeDL
 
-PLAYER_CLIENTS = [
-    "android",
-    "android_music",
-    "ios",
-    "tv",
-    "mweb",
-    "web",
+# android_vr bypasses broken JS n-challenge on cloud servers
+# web/mweb need cookies; ios ignores cookies
+CLIENT_STRATEGIES = [
+    # (client, use_cookies)
+    ("android_vr", False),
+    ("android_vr", True),
+    ("android", False),
+    ("android", True),
+    ("web_embedded", True),
+    ("mweb", True),
+    ("tv", True),
+    ("web", True),
 ]
 
 BASE_OPTS = {
@@ -23,7 +28,7 @@ BASE_OPTS = {
     "nocheckcertificate": True,
     "noplaylist": True,
     "source_address": "0.0.0.0",
-    # Do NOT set format here — causes 'Requested format is not available'
+    "force_ipv4": True,
 }
 
 DOWNLOADS_DIR = os.path.join(os.getcwd(), "downloads")
@@ -46,16 +51,17 @@ def _find_cookies():
     return None
 
 
-def _base_opts():
+def _base_opts(use_cookies=True):
     opts = dict(BASE_OPTS)
-    cookies = _find_cookies()
-    if cookies:
-        opts["cookiefile"] = cookies
+    if use_cookies:
+        cookies = _find_cookies()
+        if cookies:
+            opts["cookiefile"] = cookies
     return opts
 
 
 def _search_sync(query: str, limit: int = 5):
-    opts = _base_opts()
+    opts = _base_opts(True)
     opts["extract_flat"] = "in_playlist"
     opts["default_search"] = "ytsearch"
     results = []
@@ -93,7 +99,6 @@ def _find_downloaded(vid: str, info: dict):
         p = os.path.join(DOWNLOADS_DIR, f"{vid}.{ext}")
         if os.path.isfile(p):
             candidates.append(p)
-    # any new file in downloads matching id
     try:
         for name in os.listdir(DOWNLOADS_DIR):
             if name.startswith(vid) and os.path.isfile(os.path.join(DOWNLOADS_DIR, name)):
@@ -113,18 +118,15 @@ def _download_sync(url: str):
 
     outtmpl = os.path.join(DOWNLOADS_DIR, "%(id)s.%(ext)s")
 
-    for client in PLAYER_CLIENTS:
-        opts = _base_opts()
-        opts.update({
-            "outtmpl": outtmpl,
-            # No format key — let yt-dlp choose
-            "extractor_args": {
-                "youtube": {
-                    "player_client": [client],
-                    "player_skip": ["webpage", "configs"],
-                }
-            },
-        })
+    for client, use_cookies in CLIENT_STRATEGIES:
+        opts = _base_opts(use_cookies)
+        opts["outtmpl"] = outtmpl
+        opts["extractor_args"] = {
+            "youtube": {
+                "player_client": [client],
+                "player_skip": ["webpage", "configs"],
+            }
+        }
         try:
             with YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -133,7 +135,7 @@ def _download_sync(url: str):
                 vid = info.get("id") or ""
                 path = _find_downloaded(vid, info)
                 if path:
-                    print(f"YT download OK client={client} path={path}")
+                    print(f"YT OK client={client} cookies={use_cookies} path={path}")
                     return {
                         "path": path,
                         "title": info.get("title") or "YouTube",
@@ -141,32 +143,10 @@ def _download_sync(url: str):
                         "uploader": info.get("uploader") or "",
                         "webpage": info.get("webpage_url") or url,
                     }
-                else:
-                    print(f"YT client={client}: downloaded but file not found")
+                print(f"YT client={client}: no file after download")
         except Exception as e:
-            print(f"YT download client={client}: {e}")
+            print(f"YT client={client} cookies={use_cookies}: {e}")
             continue
-
-    # Last try: no extractor_args at all, still no format
-    opts = _base_opts()
-    opts["outtmpl"] = outtmpl
-    try:
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if info:
-                vid = info.get("id") or ""
-                path = _find_downloaded(vid, info)
-                if path:
-                    print(f"YT download OK (no client override)")
-                    return {
-                        "path": path,
-                        "title": info.get("title") or "YouTube",
-                        "duration": info.get("duration") or 0,
-                        "uploader": info.get("uploader") or "",
-                        "webpage": info.get("webpage_url") or url,
-                    }
-    except Exception as e:
-        print(f"YT final error: {e}")
 
     return None
 
