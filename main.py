@@ -1,6 +1,6 @@
 """
 Music Player + Movie + Adult + YouTube Bot
-YouTube via Piped/Invidious (works on Railway)
+Nice Now Playing UI (no Clone button)
 """
 
 import asyncio
@@ -19,6 +19,7 @@ from core.stream import (
     skip_stream,
     stop_stream,
     get_queue_text,
+    get_state,
 )
 from core.youtube import search_youtube, get_stream_info
 
@@ -45,9 +46,44 @@ def can_use(user_id: int) -> bool:
 
 def fmt_duration(sec):
     if not sec:
-        return "?"
+        return "00:00"
     m, s = divmod(int(sec), 60)
-    return f"{m}:{s:02d}"
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+def build_player_keyboard():
+    """Replay | Pause | Skip  +  Queue  (NO Clone)"""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("↻ Replay", callback_data="ctl|replay"),
+            InlineKeyboardButton("Ⅱ Pause", callback_data="ctl|pause"),
+            InlineKeyboardButton("≫ Skip", callback_data="ctl|skip"),
+        ],
+        [
+            InlineKeyboardButton("☰ Queue", callback_data="ctl|queue"),
+            InlineKeyboardButton("⏹ Stop", callback_data="ctl|stop"),
+        ],
+    ])
+
+def now_playing_text(title, duration=0, requester="User", queued=False):
+    dur = fmt_duration(duration) if duration else "--:--"
+    if queued:
+        return (
+            f"🎧 **Added To Queue**\n\n"
+            f"🎵 **Track :** {title}\n"
+            f"⏱ **Duration :** `{dur}`\n"
+            f"👤 **Requested By :** {requester}\n"
+        )
+    return (
+        f"🎧 **Music Is Playing**\n\n"
+        f"🎵 **Now Playing :** {title}\n"
+        f"⏱ **Track Duration :** `{dur}`\n"
+        f"👤 **Requested By :** {requester}\n\n"
+        f"🎶 Your track is now playing\n"
+        f"😌 Sit back, relax & enjoy the music"
+    )
 
 async def play_yt_result(chat_id, info):
     title = (info.get("title") or "YouTube")[:60]
@@ -118,6 +154,8 @@ def build_yt_keyboard(items):
         buttons.append([InlineKeyboardButton(label[:58], callback_data=f"yt|{i}")])
     return InlineKeyboardMarkup(buttons) if buttons else None
 
+# ==================== BASIC ====================
+
 @client.on_message(filters.command(["start"], PREFIXES) & ~filters.bot)
 @handle_error
 async def start(_, message: Message):
@@ -139,10 +177,10 @@ async def help_cmd(_, message: Message):
     mode = "Public" if BOT_PUBLIC else "Private"
     await message.reply_text(
         f"**Commands** (Mode: {mode})\n\n"
-        "🎵 **YouTube Music**\n/song <name> or /yt <name>\n/music <name>\n\n"
+        "🎵 **YouTube Music**\n/song <name> or /yt <name>\n\n"
         "🎬 **Movies**\n/play <name> /movie <name>\n\n"
         "🔞 **Adult**\n/adult or /xxx <query>\n\n"
-        "⏯ **Controls**\n/skip /next · /pause · /resume\n/stop · /queue /q\n\n"
+        "⏯ **Controls**\n/skip · /pause · /resume · /stop · /queue\n\n"
         "🔐 **Owner**\n/mode public | private"
     )
 
@@ -169,6 +207,8 @@ async def mode_cmd(_, message: Message):
     else:
         status = "🌐 Public" if BOT_PUBLIC else "🔒 Private"
         await message.reply_text(f"Current mode: **{status}**\n\n/mode public\n/mode private")
+
+# ==================== CONTROLS ====================
 
 @client.on_message(filters.command(["skip", "next"], PREFIXES) & ~filters.private)
 @handle_error
@@ -214,6 +254,83 @@ async def queue_cmd(_, message: Message):
         return
     await message.reply_text(get_queue_text(message.chat.id))
 
+# ==================== PLAYER CONTROL BUTTONS ====================
+
+@client.on_callback_query(filters.regex(r"^ctl\|"))
+@handle_error
+async def control_callback(_, callback: CallbackQuery):
+    user_id = callback.from_user.id if callback.from_user else 0
+    if not can_use(user_id):
+        await callback.answer("Private mode", show_alert=True)
+        return
+    action = callback.data.split("|")[1]
+    chat_id = callback.message.chat.id
+
+    if action == "pause":
+        ok, msg = await pause_stream(chat_id)
+        await callback.answer(msg[:180] if msg else "Paused")
+        if ok:
+            # switch button to Resume
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("↻ Replay", callback_data="ctl|replay"),
+                    InlineKeyboardButton("▶ Resume", callback_data="ctl|resume"),
+                    InlineKeyboardButton("≫ Skip", callback_data="ctl|skip"),
+                ],
+                [
+                    InlineKeyboardButton("☰ Queue", callback_data="ctl|queue"),
+                    InlineKeyboardButton("⏹ Stop", callback_data="ctl|stop"),
+                ],
+            ])
+            try:
+                await callback.message.edit_reply_markup(kb)
+            except Exception:
+                pass
+    elif action == "resume":
+        ok, msg = await resume_stream(chat_id)
+        await callback.answer(msg[:180] if msg else "Resumed")
+        if ok:
+            try:
+                await callback.message.edit_reply_markup(build_player_keyboard())
+            except Exception:
+                pass
+    elif action == "skip":
+        ok, msg = await skip_stream(chat_id)
+        await callback.answer("Skipped" if ok else msg[:180])
+        await callback.message.reply_text(msg)
+    elif action == "stop":
+        ok, msg = await stop_stream(chat_id)
+        await callback.answer("Stopped")
+        await callback.message.reply_text(msg)
+    elif action == "queue":
+        text = get_queue_text(chat_id)
+        await callback.answer()
+        await callback.message.reply_text(text)
+    elif action == "replay":
+        state = get_state(chat_id)
+        path = state.get("path")
+        title = state.get("title") or "Track"
+        if not path:
+            await callback.answer("Nothing to replay", show_alert=True)
+            return
+        # force replay same path
+        if os.path.isfile(str(path)):
+            ok, msg = await play_local_file(chat_id, path, title, force=True)
+        else:
+            ok, msg = await play_remote_url(chat_id, path, title, force=True)
+        await callback.answer("Replaying..." if ok else msg[:180])
+        if ok:
+            req = callback.from_user.mention if callback.from_user else "User"
+            text = now_playing_text(title, 0, req)
+            try:
+                await callback.message.edit_text(text, reply_markup=build_player_keyboard())
+            except Exception:
+                await callback.message.reply_text(text, reply_markup=build_player_keyboard())
+    else:
+        await callback.answer()
+
+# ==================== YOUTUBE ====================
+
 @client.on_message(filters.command(["song", "yt", "music", "s"], PREFIXES) & ~filters.private)
 @register
 @handle_error
@@ -228,6 +345,7 @@ async def song_cmd(_, message: Message):
         return
 
     status = await message.reply_text("🔍 Searching YouTube...")
+    requester = message.from_user.mention if message.from_user else "User"
 
     if "youtube.com" in query or "youtu.be" in query:
         await status.edit_text("⬇️ Getting stream...")
@@ -235,9 +353,13 @@ async def song_cmd(_, message: Message):
         if not info:
             await status.edit_text("❌ Could not get stream. Try another link.")
             return
-        await status.edit_text(f"▶️ Playing **{info['title'][:50]}**...")
         ok, msg = await play_yt_result(message.chat.id, info)
-        await status.edit_text(f"{'✅' if ok else '❌'} {msg}")
+        if not ok:
+            await status.edit_text(f"❌ {msg}")
+            return
+        queued = "queue" in msg.lower()
+        text = now_playing_text(info.get("title", "YouTube"), info.get("duration"), requester, queued)
+        await status.edit_text(text, reply_markup=build_player_keyboard())
         return
 
     results = await search_youtube(query, limit=6)
@@ -266,6 +388,7 @@ async def yt_callback(_, callback: CallbackQuery):
     item = results[idx]
     await callback.answer("Loading...")
     status = await callback.message.reply_text(f"⬇️ Getting stream:\n**{item['title'][:50]}**")
+    requester = callback.from_user.mention if callback.from_user else "User"
 
     info = await get_stream_info(item["url"])
     if not info:
@@ -273,14 +396,14 @@ async def yt_callback(_, callback: CallbackQuery):
         return
 
     ok, msg = await play_yt_result(chat_id, info)
-    if ok:
-        await status.edit_text(
-            f"✅ **{msg}**\n"
-            f"⏱ {fmt_duration(info.get('duration'))}\n"
-            f"👤 {info.get('uploader', '')[:40]}"
-        )
-    else:
+    if not ok:
         await status.edit_text(f"❌ {msg}")
+        return
+    queued = "queue" in msg.lower()
+    text = now_playing_text(info.get("title", item["title"]), info.get("duration") or item.get("duration"), requester, queued)
+    await status.edit_text(text, reply_markup=build_player_keyboard())
+
+# ==================== MOVIES ====================
 
 @client.on_message(filters.command(["movie", "mv"], PREFIXES) & ~filters.private)
 @register
@@ -326,6 +449,8 @@ async def play_cmd(_, message: Message):
         return
     await status.edit_text(f"No movie found.\nTry /song {query} for YouTube music.")
 
+# ==================== ADULT ====================
+
 @client.on_message(filters.command(["adult", "xxx", "nsfw"], PREFIXES) & ~filters.private)
 @register
 @handle_error
@@ -347,6 +472,8 @@ async def adult_cmd(_, message: Message):
     adult_cache[message.chat.id] = {"items": items, "page": 0}
     text = f"🔞 **Adult Search**\n\nFound **{len(items)}** results for: `{query}`\n\nChoose a video:"
     await status.edit_text(text, reply_markup=build_adult_keyboard(items, 0))
+
+# ==================== CALLBACKS ====================
 
 @client.on_callback_query(filters.regex(r"^mvpage\|"))
 @handle_error
@@ -421,16 +548,20 @@ async def movie_callback(_, callback: CallbackQuery):
         await callback.message.reply_text("❌ Link not found.")
         return
 
+    requester = callback.from_user.mention if callback.from_user else "User"
     status = await callback.message.reply_text(f"⬇️ Downloading **{title}** S{season}E{episode}...")
     filename = f"{title.replace(' ','_')}_s{season}e{episode}_{quality}.mp4"
     local_path, info = await download_file(download_url, filename)
     if not local_path:
         await status.edit_text(f"❌ Download failed.\n{info}")
         return
-    size = os.path.getsize(local_path) / (1024*1024)
-    await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n▶️ Playing...")
     success, msg = await play_local_file(chat_id, local_path, f"{title} S{season}E{episode}")
-    await status.edit_text(f"{'✅' if success else '❌'} **{msg}**\n📦 {size:.1f} MB")
+    if not success:
+        await status.edit_text(f"❌ {msg}")
+        return
+    queued = "queue" in msg.lower()
+    text = now_playing_text(f"{title} S{season}E{episode}", 0, requester, queued)
+    await status.edit_text(text, reply_markup=build_player_keyboard())
 
 @client.on_callback_query(filters.regex(r"^ad\|"))
 @handle_error
@@ -458,17 +589,21 @@ async def adult_callback(_, callback: CallbackQuery):
         return
 
     await callback.answer(f"Downloading {quality}...")
+    requester = callback.from_user.mention if callback.from_user else "User"
     status = await callback.message.reply_text(f"⬇️ Downloading:\n**{title[:60]}**")
     filename = f"adult_{idx}_{quality}.mp4"
     local_path, info = await download_file(download_url, filename)
     if not local_path:
         await status.edit_text(f"❌ Download failed.\n{info}")
         return
-    size = os.path.getsize(local_path) / (1024*1024)
-    await status.edit_text(f"✅ Downloaded ({size:.1f} MB)\n▶️ Playing...")
     success, msg = await play_local_file(chat_id, local_path, title[:40])
-    await status.edit_text(f"{'✅' if success else '❌'} **{msg}**\n📦 {size:.1f} MB")
+    if not success:
+        await status.edit_text(f"❌ {msg}")
+        return
+    queued = "queue" in msg.lower()
+    text = now_playing_text(title[:50], 0, requester, queued)
+    await status.edit_text(text, reply_markup=build_player_keyboard())
 
-print("Bot loaded: Piped/Invidious YT + Movie + Adult + Controls")
+print("Bot loaded: Now Playing UI + Piped YT + Movie + Adult")
 if __name__ == "__main__":
     client.run()
