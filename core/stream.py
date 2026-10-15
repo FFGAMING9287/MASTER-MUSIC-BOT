@@ -1,5 +1,6 @@
 """
 Stream helper - play / pause / resume / skip / stop / queue
+Supports local files + remote YouTube stream URLs
 """
 
 import os
@@ -54,14 +55,8 @@ async def _ensure_started():
         print("PyTgCalls + userbot started")
 
 async def _leave_call(chat_id: int):
-    """Try every known method to leave / stop the stream."""
     await _ensure_started()
-    methods = [
-        "leave_group_call",
-        "leave_call",
-        "stop",
-        "hangup",
-    ]
+    methods = ["leave_group_call", "leave_call", "stop", "hangup"]
     for name in methods:
         try:
             fn = getattr(pytgcalls, name, None)
@@ -70,7 +65,6 @@ async def _leave_call(chat_id: int):
                 return True
         except Exception:
             continue
-    # Last resort: play nothing / empty
     try:
         await pytgcalls.play(chat_id, None)
     except Exception:
@@ -78,13 +72,14 @@ async def _leave_call(chat_id: int):
     return False
 
 async def play_local_file(chat_id: int, file_path: str, title: str = "Video", force=False):
+    """Play a local file (movies / adult downloads)."""
     if not os.path.exists(file_path):
         return False, "File not found"
 
     state = get_state(chat_id)
 
     if state["playing"] and not force:
-        state["queue"].append({"path": file_path, "title": title})
+        state["queue"].append({"path": file_path, "title": title, "remote": False})
         pos = len(state["queue"])
         return True, f"Added to queue at position **#{pos}**\n**{title}**"
 
@@ -131,6 +126,67 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video", fo
         if "session" in err or "auth" in err:
             return False, "SESSION invalid or missing"
         return False, f"Play error: {str(e)[:180]}"
+
+async def play_remote_url(chat_id: int, stream_url: str, title: str = "YouTube", force=False):
+    """Play a remote stream URL (YouTube via yt-dlp)."""
+    state = get_state(chat_id)
+
+    if state["playing"] and not force:
+        state["queue"].append({"path": stream_url, "title": title, "remote": True})
+        pos = len(state["queue"])
+        return True, f"Added to queue at position **#{pos}**\n**{title}**"
+
+    try:
+        await _ensure_started()
+        # Audio-only for music (no forced video quality = less stretch)
+        stream = MediaStream(
+            stream_url,
+            AudioQuality.HIGH,
+            video_flags=MediaStream.Flags.IGNORE,
+        )
+        await pytgcalls.play(chat_id, stream)
+        state["playing"] = True
+        state["paused"] = False
+        state["title"] = title
+        state["path"] = stream_url
+        return True, f"Now playing **{title}** in Voice Chat"
+    except NoActiveGroupCall:
+        try:
+            peer = await app.resolve_peer(chat_id)
+            await app.invoke(
+                CreateGroupCall(
+                    peer=InputPeerChannel(
+                        channel_id=peer.channel_id,
+                        access_hash=peer.access_hash,
+                    ),
+                    random_id=app.rnd_id() // 9000000000,
+                )
+            )
+            stream = MediaStream(
+                stream_url,
+                AudioQuality.HIGH,
+                video_flags=MediaStream.Flags.IGNORE,
+            )
+            await pytgcalls.play(chat_id, stream)
+            state["playing"] = True
+            state["paused"] = False
+            state["title"] = title
+            state["path"] = stream_url
+            return True, f"Created VC + now playing **{title}**"
+        except Exception as e2:
+            return False, f"No active Voice Chat: {e2}"
+    except Exception as e:
+        # Fallback: try without video_flags
+        try:
+            stream = MediaStream(stream_url, AudioQuality.HIGH)
+            await pytgcalls.play(chat_id, stream)
+            state["playing"] = True
+            state["paused"] = False
+            state["title"] = title
+            state["path"] = stream_url
+            return True, f"Now playing **{title}**"
+        except Exception as e2:
+            return False, f"Play error: {str(e2)[:180]}"
 
 async def pause_stream(chat_id: int):
     state = get_state(chat_id)
@@ -180,7 +236,11 @@ async def skip_stream(chat_id: int):
 
     if state["queue"]:
         next_item = state["queue"].pop(0)
-        ok, msg = await play_local_file(chat_id, next_item["path"], next_item["title"], force=True)
+        is_remote = next_item.get("remote", False)
+        if is_remote:
+            ok, msg = await play_remote_url(chat_id, next_item["path"], next_item["title"], force=True)
+        else:
+            ok, msg = await play_local_file(chat_id, next_item["path"], next_item["title"], force=True)
         if ok:
             return True, f"⏭ Skipped\n{msg}\nQueue left: {len(state['queue'])}"
         return False, f"Skipped but next failed: {msg}"
@@ -188,7 +248,6 @@ async def skip_stream(chat_id: int):
     return True, "⏭ Skipped. Queue empty."
 
 async def stop_stream(chat_id: int):
-    """Fully stop streaming and clear queue."""
     state = get_state(chat_id)
     was_playing = state["playing"] or bool(state["queue"])
 
