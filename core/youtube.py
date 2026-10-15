@@ -1,38 +1,45 @@
 """
 YouTube search + stream URL extraction with yt-dlp
+Tries multiple player clients to bypass bot detection.
 """
 
 import asyncio
 import os
 from yt_dlp import YoutubeDL
 
-# Better options for reliability in 2026
-YDL_OPTS = {
+# Client order that often bypasses "Sign in to confirm you're not a bot"
+PLAYER_CLIENTS = [
+    "android",
+    "ios",
+    "tv",
+    "mweb",
+    "web",
+]
+
+BASE_OPTS = {
     "quiet": True,
     "no_warnings": True,
     "geo_bypass": True,
     "nocheckcertificate": True,
-    "extract_flat": False,
-    "default_search": "ytsearch",
-    "format": "bestaudio[ext=m4a]/bestaudio/best",
     "noplaylist": True,
     "source_address": "0.0.0.0",
 }
 
-# For getting streamable URL without full download
-STREAM_OPTS = {
-    "quiet": True,
-    "no_warnings": True,
-    "geo_bypass": True,
-    "nocheckcertificate": True,
-    "format": "bestaudio[ext=m4a]/bestaudio/best",
-    "noplaylist": True,
-}
+# Optional cookies file (put cookies.txt in project root if needed)
+COOKIES_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cookies.txt")
+
+
+def _base_opts():
+    opts = dict(BASE_OPTS)
+    if os.path.isfile(COOKIES_PATH):
+        opts["cookiefile"] = COOKIES_PATH
+    return opts
 
 
 def _search_sync(query: str, limit: int = 5):
-    opts = dict(YDL_OPTS)
+    opts = _base_opts()
     opts["extract_flat"] = "in_playlist"
+    opts["default_search"] = "ytsearch"
     results = []
     try:
         with YoutubeDL(opts) as ydl:
@@ -61,17 +68,17 @@ def _search_sync(query: str, limit: int = 5):
     return results
 
 
-def _get_stream_url_sync(url: str):
-    """Extract direct stream URL + metadata."""
+def _extract_with_client(url: str, client: str):
+    opts = _base_opts()
+    opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
+    opts["extractor_args"] = {"youtube": {"player_client": [client]}}
     try:
-        with YoutubeDL(STREAM_OPTS) as ydl:
+        with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
             if not info:
                 return None
-            # Prefer direct URL
             stream_url = info.get("url")
             if not stream_url and info.get("formats"):
-                # Pick best audio format with a url
                 for f in reversed(info["formats"]):
                     if f.get("url") and (f.get("acodec") or "none") != "none":
                         stream_url = f["url"]
@@ -87,8 +94,49 @@ def _get_stream_url_sync(url: str):
                 "webpage": info.get("webpage_url") or url,
             }
     except Exception as e:
-        print(f"YT stream error: {e}")
+        print(f"YT client={client} error: {e}")
         return None
+
+
+def _get_stream_url_sync(url: str):
+    """Try multiple player clients until one works."""
+    # Normalize short links
+    if "youtu.be/" in url:
+        vid = url.split("youtu.be/")[-1].split("?")[0].split("&")[0]
+        url = f"https://www.youtube.com/watch?v={vid}"
+
+    for client in PLAYER_CLIENTS:
+        result = _extract_with_client(url, client)
+        if result:
+            print(f"YT stream OK with client={client}")
+            return result
+
+    # Last attempt: no client override
+    opts = _base_opts()
+    opts["format"] = "bestaudio/best"
+    try:
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info:
+                stream_url = info.get("url")
+                if not stream_url and info.get("formats"):
+                    for f in reversed(info["formats"]):
+                        if f.get("url") and (f.get("acodec") or "none") != "none":
+                            stream_url = f["url"]
+                            break
+                if stream_url:
+                    return {
+                        "url": stream_url,
+                        "title": info.get("title") or "YouTube",
+                        "duration": info.get("duration") or 0,
+                        "uploader": info.get("uploader") or "",
+                        "thumb": info.get("thumbnail") or "",
+                        "webpage": info.get("webpage_url") or url,
+                    }
+    except Exception as e:
+        print(f"YT final error: {e}")
+
+    return None
 
 
 async def search_youtube(query: str, limit: int = 5):
