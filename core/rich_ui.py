@@ -1,5 +1,5 @@
 """
-Pure Rich Message UI — slideshows + in-message buttons (Bot API 10.1–10.3)
+Rich Message UI — Felix-style table lines + in-message buttons
 """
 
 import re
@@ -82,21 +82,31 @@ async def send_rich(chat_id, html: str, reply_markup=None):
         return False
 
 
-# ---------- HTML cards with slideshow + in-message buttons ----------
+# ---------- Felix-style cards with table lines ----------
 
 def html_start(name: str, mode: str) -> str:
     return f"""
 <h2>🎧 FFGAMING X MUSIC BOT</h2>
-<p>👋 Hello <b>{name}</b>!</p>
-<p>🔐 Mode : <code>{mode}</code></p>
+<p>Welcome to <b>FFGAMING X MUSIC</b>, {name} ✨</p>
 <hr/>
-<p>🎵 <b>Music</b> — <code>/song</code> <code>/yt</code></p>
-<p>🎬 <b>Movies</b> — <code>/play</code> <code>/movie</code></p>
-<p>🔞 <b>Adult</b> — <code>/adult</code> <code>/xxx</code></p>
-<p>⏯ <b>Controls</b> — <code>/skip</code> <code>/pause</code> <code>/resume</code> <code>/stop</code> <code>/queue</code></p>
-<p>🔐 <b>Owner</b> — <code>/mode public</code> | <code>private</code></p>
+<p>📋 <b>Bot Information</b></p>
+<table>
+<tr><td>Mode</td><td>{mode}</td></tr>
+<tr><td>Status</td><td>Online ✅</td></tr>
+<tr><td>Voice Chat</td><td>Supported</td></tr>
+</table>
+<hr/>
+<p>🎵 <b>Features</b></p>
+<table>
+<tr><td>Music</td><td><code>/song</code> <code>/yt</code></td></tr>
+<tr><td>Movies</td><td><code>/play</code> <code>/movie</code></td></tr>
+<tr><td>Adult</td><td><code>/adult</code> <code>/xxx</code></td></tr>
+<tr><td>Controls</td><td><code>/skip</code> <code>/pause</code> <code>/stop</code></td></tr>
+<tr><td>Owner</td><td><code>/mode public|private</code></td></tr>
+</table>
 <hr/>
 <blockquote>😌 Sit back, relax &amp; enjoy the music</blockquote>
+<p>↑ Select a menu below to continue</p>
 <tg-button-row>
   <tg-button type="callback_data" data="help|song" style="primary">🎵 Song</tg-button>
   <tg-button type="callback_data" data="help|movie" style="success">🎬 Movie</tg-button>
@@ -114,11 +124,16 @@ def html_help(mode: str) -> str:
 <h2>📖 Command Guide</h2>
 <p>Mode : <code>{mode}</code></p>
 <hr/>
-<p>🎵 <b>YouTube</b> — <code>/song</code> <code>/yt</code></p>
-<p>🎬 <b>Movies</b> — <code>/play</code> <code>/movie</code></p>
-<p>🔞 <b>Adult</b> — <code>/adult</code> <code>/xxx</code></p>
-<p>⏯ <b>Controls</b> — <code>/skip</code> <code>/pause</code> <code>/resume</code> <code>/stop</code> <code>/queue</code></p>
-<p>🔐 <b>Owner</b> — <code>/mode public|private</code></p>
+<p>📋 <b>All Commands</b></p>
+<table>
+<tr><td>🎵 YouTube</td><td><code>/song</code> <code>/yt</code></td></tr>
+<tr><td>🎬 Movies</td><td><code>/play</code> <code>/movie</code></td></tr>
+<tr><td>🔞 Adult</td><td><code>/adult</code> <code>/xxx</code></td></tr>
+<tr><td>⏯ Controls</td><td><code>/skip</code> <code>/pause</code> <code>/resume</code></td></tr>
+<tr><td></td><td><code>/stop</code> <code>/queue</code></td></tr>
+<tr><td>🔐 Owner</td><td><code>/mode public|private</code></td></tr>
+</table>
+<hr/>
 <tg-button-row>
   <tg-button type="callback_data" data="help|song" style="primary">🎵 Song</tg-button>
   <tg-button type="callback_data" data="help|movie" style="success">🎬 Movie</tg-button>
@@ -146,17 +161,24 @@ def html_now_playing(title, duration=0, requester="User", queued=False, thumb=""
         return f"""
 <h3>🎧 Added To Queue</h3>
 {media}
-<p>🎵 <b>Track :</b> {title}<br/>
-⏱ <b>Duration :</b> <code>{dur} MIN</code><br/>
-👤 <b>Requested By :</b> {requester}</p>
+<hr/>
+<table>
+<tr><td>Track</td><td>{title}</td></tr>
+<tr><td>Duration</td><td><code>{dur} MIN</code></td></tr>
+<tr><td>Requested By</td><td>{requester}</td></tr>
+</table>
 """.strip()
 
     return f"""
 <h3>🎧 Music Is Playing</h3>
 {media}
-<p>🎵 <b>Now Playing :</b> {title}<br/>
-⏱ <b>Track Duration :</b> <code>{dur} MIN</code><br/>
-👤 <b>Requested By :</b> {requester}</p>
+<hr/>
+<table>
+<tr><td>Now Playing</td><td>{title}</td></tr>
+<tr><td>Duration</td><td><code>{dur} MIN</code></td></tr>
+<tr><td>Requested By</td><td>{requester}</td></tr>
+</table>
+<hr/>
 <blockquote><code>{bar}</code></blockquote>
 <p>🎶 Your track is now playing<br/>
 😌 Sit back, relax &amp; enjoy the music</p>
@@ -178,8 +200,12 @@ def html_search(kind: str, query: str = "", count: int = 0) -> str:
     if count:
         return f"""
 <h3>{icon} {kind} Results</h3>
-<p>🔎 Query : <code>{clean_name(query)}</code><br/>
-📊 Found : <b>{count}</b></p>
+<hr/>
+<table>
+<tr><td>Query</td><td><code>{clean_name(query)}</code></td></tr>
+<tr><td>Found</td><td><b>{count}</b></td></tr>
+</table>
+<hr/>
 <blockquote>👇 Choose one from the buttons below</blockquote>
 """.strip()
     return f"""
@@ -189,10 +215,15 @@ def html_search(kind: str, query: str = "", count: int = 0) -> str:
 
 
 def html_download(title: str, quality: str = "") -> str:
-    q = f"<br/>📦 Quality : <code>{quality}</code>" if quality else ""
+    qrow = f"<tr><td>Quality</td><td><code>{quality}</code></td></tr>" if quality else ""
     return f"""
 <h3>⬇️ Downloading</h3>
-<p><code>{clean_name(title)[:55]}</code>{q}</p>
+<hr/>
+<table>
+<tr><td>Title</td><td>{clean_name(title)[:55]}</td></tr>
+{qrow}
+</table>
+<hr/>
 <blockquote>⏳ This may take a while...</blockquote>
 """.strip()
 
@@ -201,6 +232,7 @@ def html_queue(body: str) -> str:
     safe = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
     return f"""
 <h3>☰ Queue</h3>
+<hr/>
 <p>{safe}</p>
 """.strip()
 
@@ -208,15 +240,21 @@ def html_queue(body: str) -> str:
 def html_ping() -> str:
     return """
 <h3>🤖 Pong!</h3>
-<p>✅ Bot is online<br/>
-🎧 Ready for Voice Chat</p>
+<hr/>
+<table>
+<tr><td>Status</td><td>Online ✅</td></tr>
+<tr><td>Voice Chat</td><td>Ready</td></tr>
+</table>
 """.strip()
 
 
 def html_mode(status: str, detail: str = "") -> str:
     return f"""
 <h3>🔐 Mode</h3>
-<p>Status : <code>{status}</code></p>
+<hr/>
+<table>
+<tr><td>Status</td><td><code>{status}</code></td></tr>
+</table>
 <p>{detail}</p>
 """.strip()
 
@@ -224,6 +262,7 @@ def html_mode(status: str, detail: str = "") -> str:
 def html_error(msg: str) -> str:
     return f"""
 <h3>❌ Error</h3>
+<hr/>
 <p>{clean_name(msg)[:200]}</p>
 """.strip()
 
@@ -231,6 +270,7 @@ def html_error(msg: str) -> str:
 def html_info(title: str, body: str) -> str:
     return f"""
 <h3>{title}</h3>
+<hr/>
 <p>{body}</p>
 """.strip()
 
@@ -242,16 +282,20 @@ def plain_now_playing(title, duration=0, requester="User", queued=False, queue_l
     if queued:
         return (
             f"🎧 **Added To Queue**\n\n"
-            f"🎵 **Track :** {title}\n"
-            f"⏱ **Duration :** `{dur} MIN`\n"
-            f"👤 **By :** {requester}"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎵 Track : `{title}`\n"
+            f"⏱ Duration : `{dur} MIN`\n"
+            f"👤 By : {requester}\n"
+            f"━━━━━━━━━━━━━━━━━━━━"
         )
     bar = progress_bar(duration, pos)
     return (
         f"🎧 **Music Is Playing**\n\n"
-        f"🎵 **Now Playing :** {title}\n"
-        f"⏱ **Duration :** `{dur} MIN`\n"
-        f"👤 **Requested By :** {requester}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎵 Now Playing : `{title}`\n"
+        f"⏱ Duration : `{dur} MIN`\n"
+        f"👤 Requested By : {requester}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"`{bar}`\n\n"
         f"🎶 Your track is now playing\n"
         f"😌 Sit back, relax & enjoy"
@@ -268,4 +312,11 @@ def status_downloading(title, quality=""):
 
 
 def status_results(kind, query, count):
-    return f"{kind} **Results**\n\n🔎 `{query}`\n📊 **{count}** found\n\n👇 Choose"
+    return (
+        f"{kind} **Results**\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔎 Query : `{query}`\n"
+        f"📊 Found : **{count}**\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👇 Choose"
+    )
