@@ -1,10 +1,11 @@
 """
-Live progress — Yoru-style bar on same message
+Live progress — Yoru bar + colored buttons
 """
 
 import asyncio
 import time
 from core.rich_ui import plain_now_playing
+from core.buttons import player_keyboard_api, edit_message_styled
 
 _tasks = {}
 
@@ -23,7 +24,7 @@ async def start_progress(
     duration: int,
     requester: str,
     get_state_fn,
-    build_keyboard_fn,
+    build_keyboard_fn=None,
 ):
     cancel_progress(chat_id)
 
@@ -31,13 +32,15 @@ async def start_progress(
         return
 
     state = get_state_fn(chat_id)
-    state["np_msg_id"] = message.id
+    state["np_msg_id"] = message.id if hasattr(message, "id") else message.get("message_id")
     state["duration"] = duration
     state["start_ts"] = time.time()
     state["paused_at"] = None
     state["elapsed_base"] = 0
     if "autoplay" not in state:
         state["autoplay"] = False
+
+    msg_id = state["np_msg_id"]
 
     async def _loop():
         try:
@@ -46,7 +49,7 @@ async def start_progress(
                 st = get_state_fn(chat_id)
                 if not st.get("playing"):
                     break
-                if st.get("np_msg_id") != message.id:
+                if st.get("np_msg_id") != msg_id:
                     break
 
                 if st.get("paused"):
@@ -64,20 +67,8 @@ async def start_progress(
                     title_now, duration, requester,
                     queued=False, queue_len=qlen, pos=elapsed, autoplay=ap,
                 )
-                kb = build_keyboard_fn(
-                    paused=bool(st.get("paused")),
-                    queue_len=qlen,
-                    autoplay=ap,
-                )
-                try:
-                    await message.edit_text(text, reply_markup=kb)
-                except Exception as e:
-                    err = str(e).lower()
-                    if "message is not modified" in err:
-                        continue
-                    if "message to edit not found" in err or "message_id_invalid" in err:
-                        break
-                    print(f"progress edit: {e}")
+                kb = player_keyboard_api(paused=bool(st.get("paused")), autoplay=ap)
+                await edit_message_styled(chat_id, msg_id, text=text, reply_markup=kb)
 
                 if elapsed >= duration:
                     break
