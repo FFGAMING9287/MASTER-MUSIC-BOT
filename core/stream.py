@@ -1,10 +1,11 @@
 """
-Stream helper - play / pause / resume / skip / stop / queue
-Auto-plays next queued track when current ends.
-Leaves VC if queue is empty.
+Stream helper - play / pause / resume / skip / stop / queue / seek
 """
 
 import os
+import time
+import asyncio
+import subprocess
 from config import config
 from pyrogram import Client
 from yt_dlp import YoutubeDL
@@ -33,8 +34,8 @@ ytdl = YoutubeDL(ydl_opts)
 pytgcalls = PyTgCalls(app)
 
 _started = False
-
 chat_state = {}
+
 
 def get_state(chat_id):
     if chat_id not in chat_state:
@@ -44,8 +45,11 @@ def get_state(chat_id):
             "title": None,
             "path": None,
             "queue": [],
+            "duration": 0,
+            "seek_offset": 0,
         }
     return chat_state[chat_id]
+
 
 async def _ensure_started():
     global _started
@@ -56,10 +60,10 @@ async def _ensure_started():
         _started = True
         print("PyTgCalls + userbot started")
 
+
 async def _leave_call(chat_id: int):
     await _ensure_started()
-    methods = ["leave_group_call", "leave_call", "stop", "hangup"]
-    for name in methods:
+    for name in ("leave_group_call", "leave_call", "stop", "hangup"):
         try:
             fn = getattr(pytgcalls, name, None)
             if fn:
@@ -73,13 +77,14 @@ async def _leave_call(chat_id: int):
         pass
     return False
 
+
 async def _play_next_or_leave(chat_id: int):
-    """Called when stream ends: play next from queue, or leave VC."""
     state = get_state(chat_id)
     state["playing"] = False
     state["paused"] = False
     state["title"] = None
     state["path"] = None
+    state["seek_offset"] = 0
 
     if state["queue"]:
         next_item = state["queue"].pop(0)
@@ -99,15 +104,11 @@ async def _play_next_or_leave(chat_id: int):
                 except Exception:
                     pass
                 return
-            else:
-                print(f"Auto next failed: {msg}")
-                # try following item
-                await _play_next_or_leave(chat_id)
-                return
+            await _play_next_or_leave(chat_id)
+            return
         except Exception as e:
             print(f"Auto next error: {e}")
 
-    # Queue empty → leave VC
     await _leave_call(chat_id)
     try:
         await app.send_message(
@@ -117,30 +118,37 @@ async def _play_next_or_leave(chat_id: int):
     except Exception:
         pass
 
-# Register stream-end handler (py-tgcalls 2.x)
+
 try:
+
     @pytgcalls.on_update(fl.stream_end())
     async def _on_stream_end(_, update):
         chat_id = getattr(update, "chat_id", None)
         if chat_id is None:
             return
-        print(f"Stream ended in {chat_id} — auto next / leave")
+        print(f"Stream ended in {chat_id}")
         await _play_next_or_leave(chat_id)
+
 except Exception as e:
-    print(f"Could not register stream_end handler: {e}")
-    # Fallback older decorator style
+    print(f"stream_end register fail: {e}")
     try:
+
         @pytgcalls.on_stream_end()
         async def _on_stream_end_old(_, update):
             chat_id = getattr(update, "chat_id", None)
             if chat_id is None:
                 return
-            print(f"Stream ended (old) in {chat_id}")
             await _play_next_or_leave(chat_id)
-    except Exception as e2:
-        print(f"No stream_end handler available: {e2}")
 
-async def play_local_file(chat_id: int, file_path: str, title: str = "Video", force=False):
+    except Exception as e2:
+        print(f"No stream_end: {e2}")
+
+
+async def _do_play(chat_id, stream):
+    await pytgcalls.play(chat_id, stream)
+
+
+async def play_local_file(chat_id: int, file_path: str, title: str = "Video", force=False, start_sec: int = 0):
     if not os.path.exists(file_path):
         return False, "File not found"
 
@@ -148,21 +156,36 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video", fo
 
     if state["playing"] and not force:
         state["queue"].append({"path": file_path, "title": title, "remote": False})
-        pos = len(state["queue"])
-        return True, f"Added to queue at position **#{pos}**\n**{title}**"
+        return True, f"Added to queue at position **#{len(state['queue'])}**\n**{title}**"
+
+    play_path = file_path
+    if start_sec and start_sec > 0:
+        # ffmpeg seek clip for true seek
+        tmp = f"/tmp/seek_{chat_id}_{int(time.time())}.mp4"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-ss", str(int(start_sec)), "-i", file_path,
+                "-c", "copy", "-avoid_negative_ts", "1", tmp,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=60)
+            if proc.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 1000:
+                play_path = tmp
+            else:
+                print("ffmpeg seek failed, playing full file")
+        except Exception as e:
+            print(f"ffmpeg seek error: {e}")
 
     try:
         await _ensure_started()
-        stream = MediaStream(
-            file_path,
-            AudioQuality.HIGH,
-            VideoQuality.SD_480p,
-        )
-        await pytgcalls.play(chat_id, stream)
+        stream = MediaStream(play_path, AudioQuality.HIGH, VideoQuality.SD_480p)
+        await _do_play(chat_id, stream)
         state["playing"] = True
         state["paused"] = False
         state["title"] = title
         state["path"] = file_path
+        state["seek_offset"] = int(start_sec or 0)
         return True, f"Now playing **{title}** in Voice Chat"
     except NoActiveGroupCall:
         try:
@@ -176,16 +199,13 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video", fo
                     random_id=app.rnd_id() // 9000000000,
                 )
             )
-            stream = MediaStream(
-                file_path,
-                AudioQuality.HIGH,
-                VideoQuality.SD_480p,
-            )
-            await pytgcalls.play(chat_id, stream)
+            stream = MediaStream(play_path, AudioQuality.HIGH, VideoQuality.SD_480p)
+            await _do_play(chat_id, stream)
             state["playing"] = True
             state["paused"] = False
             state["title"] = title
             state["path"] = file_path
+            state["seek_offset"] = int(start_sec or 0)
             return True, f"Created VC + now playing **{title}**"
         except Exception as e2:
             return False, f"No active Voice Chat and could not create one: {e2}"
@@ -195,13 +215,13 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video", fo
             return False, "SESSION invalid or missing"
         return False, f"Play error: {str(e)[:180]}"
 
+
 async def play_remote_url(chat_id: int, stream_url: str, title: str = "YouTube", force=False):
     state = get_state(chat_id)
 
     if state["playing"] and not force:
         state["queue"].append({"path": stream_url, "title": title, "remote": True})
-        pos = len(state["queue"])
-        return True, f"Added to queue at position **#{pos}**\n**{title}**"
+        return True, f"Added to queue at position **#{len(state['queue'])}**\n**{title}**"
 
     try:
         await _ensure_started()
@@ -213,11 +233,12 @@ async def play_remote_url(chat_id: int, stream_url: str, title: str = "YouTube",
             )
         except Exception:
             stream = MediaStream(stream_url, AudioQuality.HIGH)
-        await pytgcalls.play(chat_id, stream)
+        await _do_play(chat_id, stream)
         state["playing"] = True
         state["paused"] = False
         state["title"] = title
         state["path"] = stream_url
+        state["seek_offset"] = 0
         return True, f"Now playing **{title}** in Voice Chat"
     except NoActiveGroupCall:
         try:
@@ -239,7 +260,7 @@ async def play_remote_url(chat_id: int, stream_url: str, title: str = "YouTube",
                 )
             except Exception:
                 stream = MediaStream(stream_url, AudioQuality.HIGH)
-            await pytgcalls.play(chat_id, stream)
+            await _do_play(chat_id, stream)
             state["playing"] = True
             state["paused"] = False
             state["title"] = title
@@ -250,7 +271,7 @@ async def play_remote_url(chat_id: int, stream_url: str, title: str = "YouTube",
     except Exception as e:
         try:
             stream = MediaStream(stream_url, AudioQuality.HIGH)
-            await pytgcalls.play(chat_id, stream)
+            await _do_play(chat_id, stream)
             state["playing"] = True
             state["paused"] = False
             state["title"] = title
@@ -259,39 +280,122 @@ async def play_remote_url(chat_id: int, stream_url: str, title: str = "YouTube",
         except Exception as e2:
             return False, f"Play error: {str(e2)[:180]}"
 
+
 async def pause_stream(chat_id: int):
     state = get_state(chat_id)
-    if not state["playing"]:
+    if not state.get("playing"):
         return False, "Nothing is playing"
-    if state["paused"]:
+    if state.get("paused"):
         return False, "Already paused"
-    try:
-        await _ensure_started()
+
+    await _ensure_started()
+    last_err = None
+    for name in ("pause_stream", "pause", "pause_call", "mute_stream"):
         try:
-            await pytgcalls.pause_stream(chat_id)
-        except Exception:
-            await pytgcalls.pause(chat_id)
-        state["paused"] = True
-        return True, f"⏸ Paused: **{state['title']}**"
+            fn = getattr(pytgcalls, name, None)
+            if not fn:
+                continue
+            await fn(chat_id)
+            state["paused"] = True
+            return True, f"⏸ Paused: **{state.get('title') or 'Track'}**"
+        except Exception as e:
+            last_err = e
+            continue
+
+    # Some builds use group_call object
+    try:
+        gc = getattr(pytgcalls, "group_calls", None) or getattr(pytgcalls, "_calls", None)
+        if gc and chat_id in gc:
+            call = gc[chat_id]
+            for name in ("pause_stream", "pause", "mute"):
+                fn = getattr(call, name, None)
+                if fn:
+                    await fn()
+                    state["paused"] = True
+                    return True, f"⏸ Paused: **{state.get('title') or 'Track'}**"
     except Exception as e:
-        return False, f"Pause failed: {str(e)[:120]}"
+        last_err = e
+
+    return False, f"Pause failed: {str(last_err)[:120] if last_err else 'no method'}"
+
 
 async def resume_stream(chat_id: int):
     state = get_state(chat_id)
-    if not state["playing"]:
+    if not state.get("playing"):
         return False, "Nothing is playing"
-    if not state["paused"]:
-        return False, "Not paused"
-    try:
-        await _ensure_started()
+    if not state.get("paused"):
+        return True, "Already playing"
+
+    await _ensure_started()
+    last_err = None
+    for name in ("resume_stream", "resume", "resume_call", "unmute_stream"):
         try:
-            await pytgcalls.resume_stream(chat_id)
-        except Exception:
-            await pytgcalls.resume(chat_id)
-        state["paused"] = False
-        return True, f"▶️ Resumed: **{state['title']}**"
+            fn = getattr(pytgcalls, name, None)
+            if not fn:
+                continue
+            await fn(chat_id)
+            state["paused"] = False
+            return True, f"▶️ Resumed: **{state.get('title') or 'Track'}**"
+        except Exception as e:
+            last_err = e
+            continue
+
+    try:
+        gc = getattr(pytgcalls, "group_calls", None) or getattr(pytgcalls, "_calls", None)
+        if gc and chat_id in gc:
+            call = gc[chat_id]
+            for name in ("resume_stream", "resume", "unmute"):
+                fn = getattr(call, name, None)
+                if fn:
+                    await fn()
+                    state["paused"] = False
+                    return True, f"▶️ Resumed: **{state.get('title') or 'Track'}**"
     except Exception as e:
-        return False, f"Resume failed: {str(e)[:120]}"
+        last_err = e
+
+    return False, f"Resume failed: {str(last_err)[:120] if last_err else 'no method'}"
+
+
+async def seek_stream(chat_id: int, delta: int):
+    """Seek ±seconds on local files via ffmpeg re-play. Remote URLs not supported."""
+    state = get_state(chat_id)
+    if not state.get("playing"):
+        return False, "Nothing is playing"
+
+    path = state.get("path")
+    if not path or not os.path.isfile(str(path)):
+        return False, "Seek only works on downloaded files"
+
+    # Current position from progress tracking
+    base = int(state.get("elapsed_base") or 0)
+    if state.get("paused"):
+        cur = base
+    else:
+        start = state.get("start_ts") or time.time()
+        cur = base + int(time.time() - start)
+
+    seek_off = int(state.get("seek_offset") or 0)
+    absolute = max(0, seek_off + cur + int(delta))
+    duration = int(state.get("duration") or 0)
+    if duration and absolute >= duration - 2:
+        absolute = max(0, duration - 2)
+
+    title = state.get("title") or "Track"
+    was_paused = state.get("paused")
+
+    ok, msg = await play_local_file(chat_id, path, title, force=True, start_sec=absolute)
+    if not ok:
+        return False, msg
+
+    state["elapsed_base"] = 0
+    state["start_ts"] = time.time()
+    state["seek_offset"] = absolute
+    if was_paused:
+        await pause_stream(chat_id)
+
+    direction = "+" if delta > 0 else ""
+    return True, f"Seek {direction}{delta}s → {absolute}s"
+
 
 async def skip_stream(chat_id: int):
     state = get_state(chat_id)
@@ -299,11 +403,11 @@ async def skip_stream(chat_id: int):
         return False, "Nothing is playing and queue is empty"
 
     await _leave_call(chat_id)
-
     state["playing"] = False
     state["paused"] = False
     state["title"] = None
     state["path"] = None
+    state["seek_offset"] = 0
 
     if state["queue"]:
         next_item = state["queue"].pop(0)
@@ -318,21 +422,21 @@ async def skip_stream(chat_id: int):
 
     return True, "⏭ Skipped. Queue empty."
 
+
 async def stop_stream(chat_id: int):
     state = get_state(chat_id)
     was_playing = state["playing"] or bool(state["queue"])
-
     await _leave_call(chat_id)
-
     state["playing"] = False
     state["paused"] = False
     state["title"] = None
     state["path"] = None
     state["queue"] = []
-
+    state["seek_offset"] = 0
     if was_playing:
         return True, "⏹ **Stopped streaming**\nQueue cleared. Bot left the Voice Chat."
     return True, "⏹ Nothing was playing. Queue cleared."
+
 
 def get_queue_text(chat_id: int):
     state = get_state(chat_id)
@@ -351,6 +455,7 @@ def get_queue_text(chat_id: int):
     else:
         lines.append("\nQueue is empty.")
     return "\n".join(lines)
+
 
 async def start_stream(song, lang=None):
     pass
