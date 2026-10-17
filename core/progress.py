@@ -1,5 +1,5 @@
 """
-Live progress bar — edits same Now Playing message every few seconds.
+Live progress — Yoru-style bar on same message
 """
 
 import asyncio
@@ -36,6 +36,8 @@ async def start_progress(
     state["start_ts"] = time.time()
     state["paused_at"] = None
     state["elapsed_base"] = 0
+    if "autoplay" not in state:
+        state["autoplay"] = False
 
     async def _loop():
         try:
@@ -56,17 +58,19 @@ async def start_progress(
                 elapsed = max(0, min(elapsed, duration))
                 qlen = len(st.get("queue") or [])
                 title_now = st.get("title") or title
+                ap = bool(st.get("autoplay"))
 
                 text = plain_now_playing(
                     title_now, duration, requester,
-                    queued=False, queue_len=qlen, pos=elapsed,
+                    queued=False, queue_len=qlen, pos=elapsed, autoplay=ap,
                 )
-                kb = build_keyboard_fn(paused=bool(st.get("paused")), queue_len=qlen)
+                kb = build_keyboard_fn(
+                    paused=bool(st.get("paused")),
+                    queue_len=qlen,
+                    autoplay=ap,
+                )
                 try:
-                    if getattr(message, "photo", None):
-                        await message.edit_caption(text, reply_markup=kb)
-                    else:
-                        await message.edit_text(text, reply_markup=kb)
+                    await message.edit_text(text, reply_markup=kb)
                 except Exception as e:
                     err = str(e).lower()
                     if "message is not modified" in err:
