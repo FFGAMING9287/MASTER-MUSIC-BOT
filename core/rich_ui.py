@@ -1,5 +1,5 @@
 """
-Rich Message UI — Felix-style table lines + in-message buttons
+Now Playing UI — Yoru-style layout (FFGAMING credits only)
 """
 
 import re
@@ -32,12 +32,15 @@ def clean_name(text: str) -> str:
 
 
 def progress_bar(duration: int, pos: int = 0) -> str:
+    """Yoru-style: 01:30 |-------♪|- 00:03  (elapsed | bar | remaining)"""
     total = max(int(duration or 0), 1)
     pos = max(0, min(int(pos or 0), total))
-    width = 14
-    filled = int((pos / total) * width)
-    bar = "█" * filled + "●" + "░" * max(0, width - filled)
-    return f"{fmt_duration(pos)}  {bar}  {fmt_duration(total)}"
+    remain = max(0, total - pos)
+    width = 12
+    filled = int((pos / total) * width) if total else 0
+    filled = min(filled, width - 1)
+    bar = "-" * filled + "♪" + "-" * max(0, width - filled - 1)
+    return f"{fmt_duration(pos)} |{bar}|- {fmt_duration(remain)}"
 
 
 def _kb_to_api(keyboard):
@@ -82,39 +85,77 @@ async def send_rich(chat_id, html: str, reply_markup=None):
         return False
 
 
-# ---------- Felix-style cards with table lines ----------
+def plain_now_playing(title, duration=0, requester="User", queued=False, queue_len=0, pos=0, autoplay=False):
+    title = clean_name(title)[:55]
+    requester = clean_name(requester)
+    dur = fmt_duration(duration)
+
+    if queued:
+        return (
+            f"🎧 **ADDED TO QUEUE**\n\n"
+            f"🎵 **TITLE :** `{title}`\n"
+            f"⏱ **LENGTH :** `{dur} MINS`\n"
+            f"👤 **REQUESTER :** {requester}"
+        )
+
+    bar = progress_bar(duration, pos)
+    ap = "ON" if autoplay else "OFF"
+    return (
+        f"🎬 **STREAM HAS STARTED. ENJOY THE MUSIC |**\n\n"
+        f"🎵 **TITLE :** `{title}`\n"
+        f"⏱ **LENGTH :** `{dur} MINS`\n"
+        f"👤 **REQUESTER :** {requester}\n\n"
+        f"`{bar}`"
+    )
+
+
+def html_now_playing(title, duration=0, requester="User", queued=False, thumb="", pos=0, autoplay=False) -> str:
+    title = clean_name(title)[:70]
+    requester = clean_name(requester)
+    dur = fmt_duration(duration)
+    bar = progress_bar(duration, pos)
+    ap = "ON" if autoplay else "OFF"
+
+    media = ""
+    if thumb and str(thumb).startswith("http"):
+        media = f'<tg-slideshow><img src="{thumb}"/><figcaption>{title}</figcaption></tg-slideshow>'
+
+    if queued:
+        return f"""
+<h3>🎧 Added To Queue</h3>
+{media}
+<p>🎵 <b>TITLE :</b> {title}<br/>
+⏱ <b>LENGTH :</b> <code>{dur} MINS</code><br/>
+👤 <b>REQUESTER :</b> {requester}</p>
+""".strip()
+
+    return f"""
+<h3>🎬 STREAM HAS STARTED. ENJOY THE MUSIC |</h3>
+{media}
+<p>🎵 <b>TITLE :</b> {title}<br/>
+⏱ <b>LENGTH :</b> <code>{dur} MINS</code><br/>
+👤 <b>REQUESTER :</b> {requester}</p>
+<blockquote><code>{bar}</code></blockquote>
+""".strip()
+
 
 def html_start(name: str, mode: str) -> str:
     return f"""
 <h2>🎧 FFGAMING X MUSIC BOT</h2>
-<p>Welcome to <b>FFGAMING X MUSIC</b>, {name} ✨</p>
+<p>Welcome <b>{name}</b> ✨</p>
 <hr/>
-<p>📋 <b>Bot Information</b></p>
 <table>
 <tr><td>Mode</td><td>{mode}</td></tr>
 <tr><td>Status</td><td>Online ✅</td></tr>
-<tr><td>Voice Chat</td><td>Supported</td></tr>
 </table>
 <hr/>
-<p>🎵 <b>Features</b></p>
-<table>
-<tr><td>Music</td><td><code>/song</code> <code>/yt</code></td></tr>
-<tr><td>Movies</td><td><code>/play</code> <code>/movie</code></td></tr>
-<tr><td>Adult</td><td><code>/adult</code> <code>/xxx</code></td></tr>
-<tr><td>Controls</td><td><code>/skip</code> <code>/pause</code> <code>/stop</code></td></tr>
-<tr><td>Owner</td><td><code>/mode public|private</code></td></tr>
-</table>
-<hr/>
-<blockquote>😌 Sit back, relax &amp; enjoy the music</blockquote>
-<p>↑ Select a menu below to continue</p>
+<p>🎵 <code>/song</code> <code>/yt</code> · 🎬 <code>/play</code> <code>/movie</code><br/>
+🔞 <code>/adult</code> · ⏯ <code>/skip</code> <code>/pause</code> <code>/stop</code></p>
+<blockquote>😌 Sit back, relax &amp; enjoy</blockquote>
 <tg-button-row>
   <tg-button type="callback_data" data="help|song" style="primary">🎵 Song</tg-button>
   <tg-button type="callback_data" data="help|movie" style="success">🎬 Movie</tg-button>
   <tg-button type="callback_data" data="help|adult" style="danger">🔞 Adult</tg-button>
-</tg-button-row>
-<tg-button-row>
-  <tg-button type="callback_data" data="help|ctrl">⏯ Controls</tg-button>
-  <tg-button type="callback_data" data="help|full">📖 Help</tg-button>
 </tg-button-row>
 """.strip()
 
@@ -124,73 +165,12 @@ def html_help(mode: str) -> str:
 <h2>📖 Command Guide</h2>
 <p>Mode : <code>{mode}</code></p>
 <hr/>
-<p>📋 <b>All Commands</b></p>
 <table>
 <tr><td>🎵 YouTube</td><td><code>/song</code> <code>/yt</code></td></tr>
 <tr><td>🎬 Movies</td><td><code>/play</code> <code>/movie</code></td></tr>
 <tr><td>🔞 Adult</td><td><code>/adult</code> <code>/xxx</code></td></tr>
-<tr><td>⏯ Controls</td><td><code>/skip</code> <code>/pause</code> <code>/resume</code></td></tr>
-<tr><td></td><td><code>/stop</code> <code>/queue</code></td></tr>
-<tr><td>🔐 Owner</td><td><code>/mode public|private</code></td></tr>
+<tr><td>⏯ Controls</td><td><code>/skip</code> <code>/pause</code> <code>/stop</code></td></tr>
 </table>
-<hr/>
-<tg-button-row>
-  <tg-button type="callback_data" data="help|song" style="primary">🎵 Song</tg-button>
-  <tg-button type="callback_data" data="help|movie" style="success">🎬 Movie</tg-button>
-  <tg-button type="callback_data" data="help|adult" style="danger">🔞 Adult</tg-button>
-</tg-button-row>
-""".strip()
-
-
-def html_now_playing(title, duration=0, requester="User", queued=False, thumb="", pos=0) -> str:
-    title = clean_name(title)[:70]
-    requester = clean_name(requester)
-    dur = fmt_duration(duration)
-    bar = progress_bar(duration, pos)
-
-    media = ""
-    if thumb and str(thumb).startswith("http"):
-        media = f"""
-<tg-slideshow>
-  <img src="{thumb}"/>
-  <figcaption>{title}</figcaption>
-</tg-slideshow>
-""".strip()
-
-    if queued:
-        return f"""
-<h3>🎧 Added To Queue</h3>
-{media}
-<hr/>
-<table>
-<tr><td>Track</td><td>{title}</td></tr>
-<tr><td>Duration</td><td><code>{dur} MIN</code></td></tr>
-<tr><td>Requested By</td><td>{requester}</td></tr>
-</table>
-""".strip()
-
-    return f"""
-<h3>🎧 Music Is Playing</h3>
-{media}
-<hr/>
-<table>
-<tr><td>Now Playing</td><td>{title}</td></tr>
-<tr><td>Duration</td><td><code>{dur} MIN</code></td></tr>
-<tr><td>Requested By</td><td>{requester}</td></tr>
-</table>
-<hr/>
-<blockquote><code>{bar}</code></blockquote>
-<p>🎶 Your track is now playing<br/>
-😌 Sit back, relax &amp; enjoy the music</p>
-<tg-button-row>
-  <tg-button type="callback_data" data="ctl|replay" style="primary">↻ Replay</tg-button>
-  <tg-button type="callback_data" data="ctl|pause" style="success">Ⅱ Pause</tg-button>
-  <tg-button type="callback_data" data="ctl|skip">≫ Skip</tg-button>
-</tg-button-row>
-<tg-button-row>
-  <tg-button type="callback_data" data="ctl|queue">☰ Queue</tg-button>
-  <tg-button type="callback_data" data="ctl|stop" style="danger">⏹ Stop</tg-button>
-</tg-button-row>
 """.strip()
 
 
@@ -205,101 +185,43 @@ def html_search(kind: str, query: str = "", count: int = 0) -> str:
 <tr><td>Query</td><td><code>{clean_name(query)}</code></td></tr>
 <tr><td>Found</td><td><b>{count}</b></td></tr>
 </table>
-<hr/>
 <blockquote>👇 Choose one from the buttons below</blockquote>
 """.strip()
-    return f"""
-<h3>{icon} Searching {kind}...</h3>
-<p>⏳ Please wait a moment</p>
-""".strip()
+    return f"<h3>{icon} Searching {kind}...</h3><p>⏳ Please wait</p>"
 
 
 def html_download(title: str, quality: str = "") -> str:
-    qrow = f"<tr><td>Quality</td><td><code>{quality}</code></td></tr>" if quality else ""
+    q = f"<tr><td>Quality</td><td><code>{quality}</code></td></tr>" if quality else ""
     return f"""
 <h3>⬇️ Downloading</h3>
 <hr/>
 <table>
 <tr><td>Title</td><td>{clean_name(title)[:55]}</td></tr>
-{qrow}
+{q}
 </table>
-<hr/>
-<blockquote>⏳ This may take a while...</blockquote>
+<blockquote>⏳ Please wait...</blockquote>
 """.strip()
 
 
 def html_queue(body: str) -> str:
     safe = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
-    return f"""
-<h3>☰ Queue</h3>
-<hr/>
-<p>{safe}</p>
-""".strip()
+    return f"<h3>☰ Queue</h3><hr/><p>{safe}</p>"
 
 
 def html_ping() -> str:
-    return """
-<h3>🤖 Pong!</h3>
-<hr/>
-<table>
-<tr><td>Status</td><td>Online ✅</td></tr>
-<tr><td>Voice Chat</td><td>Ready</td></tr>
-</table>
-""".strip()
+    return "<h3>🤖 Pong!</h3><p>✅ Online · 🎧 Ready</p>"
 
 
 def html_mode(status: str, detail: str = "") -> str:
-    return f"""
-<h3>🔐 Mode</h3>
-<hr/>
-<table>
-<tr><td>Status</td><td><code>{status}</code></td></tr>
-</table>
-<p>{detail}</p>
-""".strip()
+    return f"<h3>🔐 Mode</h3><p><code>{status}</code></p><p>{detail}</p>"
 
 
 def html_error(msg: str) -> str:
-    return f"""
-<h3>❌ Error</h3>
-<hr/>
-<p>{clean_name(msg)[:200]}</p>
-""".strip()
+    return f"<h3>❌ Error</h3><p>{clean_name(msg)[:200]}</p>"
 
 
 def html_info(title: str, body: str) -> str:
-    return f"""
-<h3>{title}</h3>
-<hr/>
-<p>{body}</p>
-""".strip()
-
-
-def plain_now_playing(title, duration=0, requester="User", queued=False, queue_len=0, pos=0):
-    title = clean_name(title)[:55]
-    requester = clean_name(requester)
-    dur = fmt_duration(duration)
-    if queued:
-        return (
-            f"🎧 **Added To Queue**\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎵 Track : `{title}`\n"
-            f"⏱ Duration : `{dur} MIN`\n"
-            f"👤 By : {requester}\n"
-            f"━━━━━━━━━━━━━━━━━━━━"
-        )
-    bar = progress_bar(duration, pos)
-    return (
-        f"🎧 **Music Is Playing**\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎵 Now Playing : `{title}`\n"
-        f"⏱ Duration : `{dur} MIN`\n"
-        f"👤 Requested By : {requester}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"`{bar}`\n\n"
-        f"🎶 Your track is now playing\n"
-        f"😌 Sit back, relax & enjoy"
-    )
+    return f"<h3>{title}</h3><hr/><p>{body}</p>"
 
 
 def status_searching(kind="YouTube"):
@@ -312,11 +234,4 @@ def status_downloading(title, quality=""):
 
 
 def status_results(kind, query, count):
-    return (
-        f"{kind} **Results**\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔎 Query : `{query}`\n"
-        f"📊 Found : **{count}**\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👇 Choose"
-    )
+    return f"{kind} **Results**\n\n🔎 `{query}`\n📊 **{count}**\n\n👇 Choose"
