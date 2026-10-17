@@ -18,6 +18,7 @@ from core.stream import (
     resume_stream,
     skip_stream,
     stop_stream,
+    seek_stream,
     get_queue_text,
     get_state,
 )
@@ -127,6 +128,8 @@ async def send_now_playing(chat_id, title, duration=0, requester="User", queued=
     state = get_state(chat_id)
     qlen = len(state.get("queue") or [])
     ap = bool(state.get("autoplay"))
+    if duration:
+        state["duration"] = int(duration)
     plain = plain_now_playing(title, duration, requester, queued, qlen, pos=0, autoplay=ap)
     kb_api = None if queued else player_keyboard_api(paused=False, autoplay=ap)
 
@@ -256,18 +259,18 @@ async def help_cmd(_, message: Message):
 async def help_callback(_, callback: CallbackQuery):
     section = callback.data.split("|")[1]
     map_html = {
-        "song": html_info("🎵 YouTube Music", "<code>/song <name></code><br/><code>/yt <link></code>"),
-        "movie": html_info("🎬 Movies", "<code>/play <name></code><br/><code>/movie <name></code>"),
-        "adult": html_info("🔞 Adult", "<code>/adult <query></code><br/><code>/xxx <query></code>"),
+        "song": html_info("🎵 YouTube Music", "<code>/song <name></code>"),
+        "movie": html_info("🎬 Movies", "<code>/play <name></code>"),
+        "adult": html_info("🔞 Adult", "<code>/adult <query></code>"),
         "ctrl": html_info("⏯ Controls", "▶ Ⅱ ↻ ⏭ ⏹ · Autoplay · «10s · Close"),
         "full": html_help("🌐 Public" if BOT_PUBLIC else "🔒 Private"),
     }
     plain_map = {
-        "song": "🎵 **YouTube**\n`/song <name>`\n`/yt <link>`",
+        "song": "🎵 **YouTube**\n`/song <name>`",
         "movie": "🎬 **Movies**\n`/play` `/movie`",
         "adult": "🔞 **Adult**\n`/adult` `/xxx`",
-        "ctrl": "⏯ **Controls**\n▶ pause skip stop · autoplay · seek",
-        "full": "📖 **Help**\n/song /yt · /play /movie · /adult",
+        "ctrl": "⏯ **Controls**",
+        "full": "📖 **Help**",
     }
     html = map_html.get(section, map_html["full"])
     plain = plain_map.get(section, plain_map["full"])
@@ -293,13 +296,13 @@ async def mode_cmd(_, message: Message):
     arg = extract_args(message.text).lower().strip()
     if arg in ("public", "on", "open"):
         BOT_PUBLIC = True
-        await reply_rich_or_text(message, html_mode("🌐 Public", "Everyone can use the bot."), "🌐 **Public Mode ON**")
+        await reply_rich_or_text(message, html_mode("🌐 Public", "Everyone can use."), "🌐 **Public Mode ON**")
     elif arg in ("private", "off", "lock"):
         BOT_PUBLIC = False
-        await reply_rich_or_text(message, html_mode("🔒 Private", "Only owner can use features."), "🔒 **Private Mode ON**")
+        await reply_rich_or_text(message, html_mode("🔒 Private", "Owner only."), "🔒 **Private Mode ON**")
     else:
         status = "🌐 Public" if BOT_PUBLIC else "🔒 Private"
-        await reply_rich_or_text(message, html_mode(status, "<code>/mode public</code> | <code>private</code>"), f"🔐 Mode: `{status}`")
+        await reply_rich_or_text(message, html_mode(status, "/mode public|private"), f"🔐 Mode: `{status}`")
 
 @client.on_message(filters.command(["skip", "next"], PREFIXES) & ~filters.private)
 @handle_error
@@ -358,13 +361,13 @@ async def control_callback(_, callback: CallbackQuery):
     if action == "pause":
         on_pause(chat_id, get_state)
         ok, msg = await pause_stream(chat_id)
-        await callback.answer(msg[:180] if msg else "Paused")
+        await callback.answer((msg or "Paused")[:180], show_alert=not ok)
         if ok:
             await edit_message_styled(chat_id, callback.message.id, reply_markup=player_keyboard_api(paused=True, autoplay=bool(state.get("autoplay"))))
     elif action == "resume":
         on_resume(chat_id, get_state)
         ok, msg = await resume_stream(chat_id)
-        await callback.answer(msg[:180] if msg else "Resumed")
+        await callback.answer((msg or "Resumed")[:180], show_alert=not ok)
         if ok:
             await edit_message_styled(chat_id, callback.message.id, reply_markup=player_keyboard_api(paused=False, autoplay=bool(state.get("autoplay"))))
     elif action == "skip":
@@ -404,26 +407,11 @@ async def control_callback(_, callback: CallbackQuery):
         await callback.answer(f"Autoplay : {ap}")
         await edit_message_styled(chat_id, callback.message.id, reply_markup=player_keyboard_api(paused=bool(state.get("paused")), autoplay=state["autoplay"]))
     elif action == "seekback":
-        base = int(state.get("elapsed_base") or 0)
-        if state.get("paused"):
-            state["elapsed_base"] = max(0, base - 10)
-        else:
-            start = state.get("start_ts") or time.time()
-            cur = base + int(time.time() - start)
-            state["elapsed_base"] = max(0, cur - 10)
-            state["start_ts"] = time.time()
-        await callback.answer("« -10s")
+        ok, msg = await seek_stream(chat_id, -10)
+        await callback.answer((msg or "« -10s")[:180], show_alert=not ok)
     elif action == "seekfwd":
-        dur = int(state.get("duration") or 0)
-        base = int(state.get("elapsed_base") or 0)
-        if state.get("paused"):
-            state["elapsed_base"] = min(dur, base + 10) if dur else base + 10
-        else:
-            start = state.get("start_ts") or time.time()
-            cur = base + int(time.time() - start)
-            state["elapsed_base"] = min(dur, cur + 10) if dur else cur + 10
-            state["start_ts"] = time.time()
-        await callback.answer("+10s »")
+        ok, msg = await seek_stream(chat_id, 10)
+        await callback.answer((msg or "+10s »")[:180], show_alert=not ok)
     elif action == "close":
         try:
             await callback.message.delete()
@@ -506,8 +494,7 @@ async def movie_cmd(_, message: Message):
         return await status.edit_text("❌ No results found")
     movie_cache[message.chat.id] = {"data": data, "page": 0}
     result = data["results"][0]
-    body = f"📅 {result.get('year')} · ⭐ {result.get('rating','N/A')}/10"
-    html = html_info(f"🎬 {result.get('title')}", body)
+    html = html_info(f"🎬 {result.get('title')}", f"📅 {result.get('year')}")
     kb = build_movie_keyboard(data, 0)
     if not await send_rich(message.chat.id, html, kb):
         await status.edit_text(f"🎬 **{result.get('title')}**\nChoose:", reply_markup=kb)
@@ -673,6 +660,6 @@ async def adult_callback(_, callback: CallbackQuery):
     dur = duration_from_item(item) or await duration_from_file(local_path)
     await send_now_playing(chat_id, title[:50], dur, req, "queue" in msg.lower(), thumb=thumb, edit_msg=status)
 
-print("Bot loaded: Yoru-style colored buttons (FFGAMING)")
+print("Bot loaded: pause/seek fixed (FFGAMING)")
 if __name__ == "__main__":
     client.run()
