@@ -1,6 +1,6 @@
 """
-YouTube via Piped + Invidious (works from cloud IPs)
-yt-dlp is blocked on Railway — these APIs proxy streams.
+YouTube via Piped + Invidious
+Download audio to local file so VC always has real sound.
 """
 
 import asyncio
@@ -52,13 +52,11 @@ async def _get_json(session, url, timeout=15):
 
 
 async def search_youtube(query: str, limit: int = 6):
-    """Search via Piped (fallback Invidious)."""
     results = []
     async with aiohttp.ClientSession() as session:
         for base in PIPED_INSTANCES:
             data = await _get_json(session, f"{base}/search?q={aiohttp.helpers.quote(query)}&filter=videos")
             if not data or not isinstance(data, list):
-                # some return {items: [...]}
                 if isinstance(data, dict):
                     data = data.get("items") or data.get("results") or []
                 else:
@@ -75,7 +73,7 @@ async def search_youtube(query: str, limit: int = 6):
                     continue
                 title = item.get("title") or "Unknown"
                 duration = item.get("duration") or 0
-                uploader = item.get("uploaderName") or item.get("uploader") or ""
+                uploader = item.get("uploader") or item.get("uploaderName") or ""
                 results.append({
                     "id": vid,
                     "title": title,
@@ -89,7 +87,6 @@ async def search_youtube(query: str, limit: int = 6):
             if results:
                 return results
 
-        # Invidious search
         for base in INVIDIOUS_INSTANCES:
             data = await _get_json(session, f"{base}/api/v1/search?q={aiohttp.helpers.quote(query)}&type=video")
             if not data or not isinstance(data, list):
@@ -113,25 +110,28 @@ async def search_youtube(query: str, limit: int = 6):
     return results
 
 
-def _pick_audio_url(streams: list) -> str | None:
+def _pick_audio_url(streams: list):
     if not streams:
         return None
-    # Prefer m4a / mp4 audio, higher bitrate
+
     def score(s):
         mime = (s.get("mimeType") or s.get("type") or "").lower()
         br = int(s.get("bitrate") or 0)
         sc = br
-        if "mp4" in mime or "m4a" in mime:
+        if "mp4" in mime or "m4a" in mime or "audio/mp4" in mime:
+            sc += 200000
+        if "webm" in mime or "opus" in mime:
             sc += 100000
         if "audio" in mime:
             sc += 50000
         return sc
+
     ranked = sorted(streams, key=score, reverse=True)
     for s in ranked:
         u = s.get("url")
         if u:
-            return u
-    return None
+            return u, (s.get("mimeType") or s.get("type") or "")
+    return None, ""
 
 
 async def _streams_piped(session, vid: str):
@@ -143,16 +143,23 @@ async def _streams_piped(session, vid: str):
         duration = data.get("duration") or 0
         uploader = data.get("uploader") or ""
         audios = data.get("audioStreams") or []
-        url = _pick_audio_url(audios)
+        url, mime = _pick_audio_url(audios)
         if not url:
-            # fallback any video stream with audio
             for v in (data.get("videoStreams") or []):
                 if v.get("url") and not v.get("videoOnly"):
                     url = v["url"]
+                    mime = v.get("mimeType") or ""
                     break
         if url:
             print(f"Piped OK {base} vid={vid}")
-            return {"url": url, "title": title, "duration": duration, "uploader": uploader, "is_local": False}
+            return {
+                "url": url,
+                "title": title,
+                "duration": duration,
+                "uploader": uploader,
+                "mime": mime,
+                "is_local": False,
+            }
     return None
 
 
@@ -166,29 +173,104 @@ async def _streams_invidious(session, vid: str):
         uploader = data.get("author") or ""
         formats = data.get("adaptiveFormats") or []
         audio_fmts = [f for f in formats if "audio" in (f.get("type") or "")]
-        url = _pick_audio_url(audio_fmts)
+        url, mime = _pick_audio_url(audio_fmts)
         if not url:
-            # progressive
             for f in (data.get("formatStreams") or []):
                 if f.get("url"):
                     url = f["url"]
+                    mime = f.get("type") or ""
                     break
         if url:
             print(f"Invidious OK {base} vid={vid}")
-            return {"url": url, "title": title, "duration": duration, "uploader": uploader, "is_local": False}
+            return {
+                "url": url,
+                "title": title,
+                "duration": duration,
+                "uploader": uploader,
+                "mime": mime,
+                "is_local": False,
+            }
     return None
+
+
+async def _download_audio(url: str, vid: str, mime: str = "") -> str | None:
+    """Download stream URL to local file for reliable VC playback."""
+    ext = "m4a"
+    m = (mime or "").lower()
+    if "webm" in m or "opus" in m:
+        ext = "webm"
+    elif "mp4" in m or "m4a" in m:
+        ext = "m4a"
+    path = os.path.join(DOWNLOADS_DIR, f"yt_{vid}.{ext}")
+    if os.path.exists(path) and os.path.getsize(path) > 50000:
+        return path
+
+    headers = {
+        "User-Agent": UA,
+        "Accept": "*/*",
+        "Referer": "https://www.youtube.com/",
+    }
+    try:
+        timeout = aiohttp.ClientTimeout(total=180, sock_read=60)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    print(f"audio dl status {resp.status}")
+                    return None
+                total = 0
+                with open(path, "wb") as f:
+                    async for chunk in resp.content.iter_chunked(64 * 1024):
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        total += len(chunk)
+                if total < 20000:
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+                    print(f"audio too small {total}")
+                    return None
+                print(f"Downloaded audio {total} bytes -> {path}")
+                return path
+    except Exception as e:
+        print(f"audio download error: {e}")
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+        return None
 
 
 async def get_stream_info(url: str):
+    """Resolve YouTube → prefer local audio file for VC sound."""
     vid = extract_video_id(url)
     if not vid:
         return None
+
     async with aiohttp.ClientSession() as session:
         info = await _streams_piped(session, vid)
-        if info:
-            return info
-        info = await _streams_invidious(session, vid)
-        if info:
-            return info
-    print(f"No stream for {vid}")
-    return None
+        if not info:
+            info = await _streams_invidious(session, vid)
+        if not info:
+            print(f"No stream for {vid}")
+            return None
+
+    # Download to local so pytgcalls always has audio
+    local = await _download_audio(info["url"], vid, info.get("mime") or "")
+    if local:
+        return {
+            "url": local,
+            "path": local,
+            "title": info.get("title") or "YouTube",
+            "duration": info.get("duration") or 0,
+            "uploader": info.get("uploader") or "",
+            "is_local": True,
+            "thumb": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+        }
+
+    # Fallback remote URL (may be silent on some hosts)
+    info["is_local"] = False
+    info["thumb"] = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+    return info

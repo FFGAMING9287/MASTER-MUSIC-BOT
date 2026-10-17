@@ -1,11 +1,11 @@
 """
 Stream helper - play / pause / resume / skip / stop / queue / seek
+Audio-focused MediaStream for reliable VC sound.
 """
 
 import os
 import time
 import asyncio
-import subprocess
 from config import config
 from pyrogram import Client
 from yt_dlp import YoutubeDL
@@ -148,6 +148,27 @@ async def _do_play(chat_id, stream):
     await pytgcalls.play(chat_id, stream)
 
 
+def _audio_stream(path_or_url: str, with_video: bool = False):
+    """Build MediaStream preferring audio so VC has sound."""
+    if with_video and os.path.isfile(str(path_or_url)):
+        try:
+            return MediaStream(path_or_url, AudioQuality.HIGH, VideoQuality.SD_480p)
+        except Exception:
+            pass
+    # Audio-only path (most reliable for music)
+    try:
+        return MediaStream(
+            path_or_url,
+            AudioQuality.HIGH,
+            video_flags=MediaStream.Flags.IGNORE,
+        )
+    except Exception:
+        try:
+            return MediaStream(path_or_url, AudioQuality.HIGH)
+        except Exception:
+            return MediaStream(path_or_url)
+
+
 async def play_local_file(chat_id: int, file_path: str, title: str = "Video", force=False, start_sec: int = 0):
     if not os.path.exists(file_path):
         return False, "File not found"
@@ -160,7 +181,6 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video", fo
 
     play_path = file_path
     if start_sec and start_sec > 0:
-        # ffmpeg seek clip for true seek
         tmp = f"/tmp/seek_{chat_id}_{int(time.time())}.mp4"
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -172,14 +192,14 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video", fo
             await asyncio.wait_for(proc.wait(), timeout=60)
             if proc.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 1000:
                 play_path = tmp
-            else:
-                print("ffmpeg seek failed, playing full file")
         except Exception as e:
             print(f"ffmpeg seek error: {e}")
 
+    # Music files → audio only; video files → with video
+    is_audio_ext = str(play_path).lower().endswith((".m4a", ".mp3", ".webm", ".ogg", ".opus", ".flac", ".wav"))
     try:
         await _ensure_started()
-        stream = MediaStream(play_path, AudioQuality.HIGH, VideoQuality.SD_480p)
+        stream = _audio_stream(play_path, with_video=not is_audio_ext)
         await _do_play(chat_id, stream)
         state["playing"] = True
         state["paused"] = False
@@ -199,7 +219,7 @@ async def play_local_file(chat_id: int, file_path: str, title: str = "Video", fo
                     random_id=app.rnd_id() // 9000000000,
                 )
             )
-            stream = MediaStream(play_path, AudioQuality.HIGH, VideoQuality.SD_480p)
+            stream = _audio_stream(play_path, with_video=not is_audio_ext)
             await _do_play(chat_id, stream)
             state["playing"] = True
             state["paused"] = False
@@ -223,16 +243,13 @@ async def play_remote_url(chat_id: int, stream_url: str, title: str = "YouTube",
         state["queue"].append({"path": stream_url, "title": title, "remote": True})
         return True, f"Added to queue at position **#{len(state['queue'])}**\n**{title}**"
 
+    # If path is actually a local file, route to local player
+    if os.path.isfile(str(stream_url)):
+        return await play_local_file(chat_id, stream_url, title, force=force)
+
     try:
         await _ensure_started()
-        try:
-            stream = MediaStream(
-                stream_url,
-                AudioQuality.HIGH,
-                video_flags=MediaStream.Flags.IGNORE,
-            )
-        except Exception:
-            stream = MediaStream(stream_url, AudioQuality.HIGH)
+        stream = _audio_stream(stream_url, with_video=False)
         await _do_play(chat_id, stream)
         state["playing"] = True
         state["paused"] = False
@@ -252,14 +269,7 @@ async def play_remote_url(chat_id: int, stream_url: str, title: str = "YouTube",
                     random_id=app.rnd_id() // 9000000000,
                 )
             )
-            try:
-                stream = MediaStream(
-                    stream_url,
-                    AudioQuality.HIGH,
-                    video_flags=MediaStream.Flags.IGNORE,
-                )
-            except Exception:
-                stream = MediaStream(stream_url, AudioQuality.HIGH)
+            stream = _audio_stream(stream_url, with_video=False)
             await _do_play(chat_id, stream)
             state["playing"] = True
             state["paused"] = False
@@ -302,7 +312,6 @@ async def pause_stream(chat_id: int):
             last_err = e
             continue
 
-    # Some builds use group_call object
     try:
         gc = getattr(pytgcalls, "group_calls", None) or getattr(pytgcalls, "_calls", None)
         if gc and chat_id in gc:
@@ -357,7 +366,6 @@ async def resume_stream(chat_id: int):
 
 
 async def seek_stream(chat_id: int, delta: int):
-    """Seek ±seconds on local files via ffmpeg re-play. Remote URLs not supported."""
     state = get_state(chat_id)
     if not state.get("playing"):
         return False, "Nothing is playing"
@@ -366,7 +374,6 @@ async def seek_stream(chat_id: int, delta: int):
     if not path or not os.path.isfile(str(path)):
         return False, "Seek only works on downloaded files"
 
-    # Current position from progress tracking
     base = int(state.get("elapsed_base") or 0)
     if state.get("paused"):
         cur = base
