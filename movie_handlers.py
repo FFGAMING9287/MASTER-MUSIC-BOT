@@ -100,14 +100,14 @@ async def movie_callback(client: Client, callback: CallbackQuery):
         await callback.message.reply_text("Download link not found.")
         return
 
-    status_msg = await callback.message.reply_text("⬇️ Downloading in background... Please wait.")
+    status_msg = await callback.message.reply_text(
+        "⬇️ Downloading… rate limits are handled with a short, bounded backoff."
+    )
 
-    local_path = await download_movie(download_url, filename)
+    local_path, detail = await download_movie(download_url, filename)
 
     if local_path:
-        await status_msg.edit_text(f"✅ Downloaded! Now playing in VC...\n`{filename}`")
-        # TODO: integrate with start_stream for video play
-        # For now just notify
-        await callback.message.reply_text(f"File ready: `{local_path}`\n\n(Full VC play integration coming next)")
+        await status_msg.edit_text(f"✅ Downloaded successfully: {filename}")
+        await callback.message.reply_text(f"File ready: {local_path}\nSource: {detail}")
     else:
-        await status_msg.edit_text("❌ Download failed.")
+        await status_msg.edit_text(f"❌ Download failed.\n\n{detail or 'Unknown download error'}")
