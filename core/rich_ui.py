@@ -1,6 +1,7 @@
 """
-Now Playing UI — text body only (no progress inside text).
+Now Playing UI — Yoru-style layout (FFGAMING credits only)
 Progress lives on the blue keyboard button (NOÉ style).
+Start/Help: full menu UI restored.
 """
 
 import re
@@ -27,7 +28,7 @@ def clean_name(text: str) -> str:
         return "User"
     text = re.sub(r"<a[^>]*>(.*?)</a>", r"\1", text, flags=re.I | re.S)
     text = re.sub(r"<[^>]+>", "", text)
-    text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    text = text.replace("&", "&").replace("<", "<").replace(">", ">")
     text = text.strip()
     return text[:60] if text else "User"
 
@@ -85,7 +86,7 @@ async def send_rich(chat_id, html: str, reply_markup=None):
 
 
 def plain_now_playing(title, duration=0, requester="User", queued=False, queue_len=0, pos=0, autoplay=False):
-    """Body only — NO progress line (progress is the blue button under the message)."""
+    """Body only — progress is the blue button under the message."""
     title = clean_name(title)[:55]
     requester = clean_name(requester)
     dur = fmt_duration(duration)
@@ -134,22 +135,44 @@ def html_now_playing(title, duration=0, requester="User", queued=False, thumb=""
 
 
 def html_start(name: str, mode: str) -> str:
+    name = clean_name(name)
     return f"""
-<h3>🎧 FFGAMING Music Bot</h3>
+<h2>🎧 FFGAMING X MUSIC BOT</h2>
+<p>Welcome to <b>FFGAMING X MUSIC</b>, {name} ✨</p>
 <hr/>
-<p>Hi <b>{clean_name(name)}</b></p>
-<p>Mode: <code>{mode}</code></p>
-<blockquote>Use /play /song /movie /xxx · VC ready</blockquote>
+<p>📋 <b>Bot Information</b></p>
+<table>
+<tr><td>Mode</td><td>{mode}</td></tr>
+<tr><td>Status</td><td>Online ✅</td></tr>
+<tr><td>Voice Chat</td><td>Supported</td></tr>
+</table>
+<hr/>
+<p>🎵 <b>Features</b></p>
+<table>
+<tr><td>Music</td><td><code>/song</code> <code>/yt</code></td></tr>
+<tr><td>Movies</td><td><code>/play</code> <code>/movie</code></td></tr>
+<tr><td>Adult</td><td><code>/adult</code> <code>/xxx</code></td></tr>
+<tr><td>Controls</td><td><code>/skip</code> <code>/pause</code> <code>/stop</code></td></tr>
+<tr><td>Owner</td><td><code>/mode public|private</code></td></tr>
+</table>
+<blockquote>😌 Sit back, relax & enjoy the music</blockquote>
+<p>↑ Select a menu below to continue</p>
 """.strip()
 
 
 def html_help(mode: str) -> str:
     return f"""
-<h3>📖 Help</h3>
+<h2>🎧 FFGAMING X MUSIC BOT</h2>
+<p>👋 Hello!</p>
+<p>🔐 Mode : {mode}</p>
 <hr/>
-<p><code>/play</code> · <code>/song</code> · <code>/movie</code> · <code>/xxx</code></p>
-<p><code>/pause</code> · <code>/resume</code> · <code>/skip</code> · <code>/stop</code> · <code>/queue</code></p>
-<p>Mode: <code>{mode}</code></p>
+<p>🎵 <b>Music</b> — <code>/song</code> <code>/yt</code></p>
+<p>🎬 <b>Movies</b> — <code>/play</code> <code>/movie</code></p>
+<p>🔞 <b>Adult</b> — <code>/adult</code> <code>/xxx</code></p>
+<p>⏯ <b>Controls</b> — <code>/skip</code> <code>/pause</code> <code>/resume</code> <code>/stop</code> <code>/queue</code></p>
+<p>🔐 <b>Owner</b> — <code>/mode public|private</code></p>
+<hr/>
+<blockquote>😌 Sit back, relax & enjoy the music</blockquote>
 """.strip()
 
 
@@ -173,7 +196,7 @@ def html_download(title: str, quality: str = "") -> str:
 
 
 def html_queue(body: str) -> str:
-    safe = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
+    safe = body.replace("&", "&").replace("<", "<").replace(">", ">").replace("\n", "<br/>")
     return f"<h3>☰ Queue</h3><hr/><p>{safe}</p>"
 
 
