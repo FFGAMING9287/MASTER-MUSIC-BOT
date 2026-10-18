@@ -1,11 +1,11 @@
 """
-Live progress — Yoru bar + colored buttons
+Live progress: updates the BLUE progress BUTTON (outside message text).
 """
 
 import asyncio
 import time
-from core.rich_ui import plain_now_playing
 from core.buttons import player_keyboard_api, edit_message_styled
+from core.rich_ui import plain_now_playing
 
 _tasks = {}
 
@@ -59,15 +59,20 @@ async def start_progress(
                     elapsed = int(st.get("elapsed_base") or 0) + int(time.time() - start)
 
                 elapsed = max(0, min(elapsed, duration))
-                qlen = len(st.get("queue") or [])
                 title_now = st.get("title") or title
                 ap = bool(st.get("autoplay"))
 
+                # Keep body stable; only refresh keyboard progress button
                 text = plain_now_playing(
                     title_now, duration, requester,
-                    queued=False, queue_len=qlen, pos=elapsed, autoplay=ap,
+                    queued=False, queue_len=len(st.get("queue") or []), pos=elapsed, autoplay=ap,
                 )
-                kb = player_keyboard_api(paused=bool(st.get("paused")), autoplay=ap)
+                kb = player_keyboard_api(
+                    paused=bool(st.get("paused")),
+                    autoplay=ap,
+                    duration=duration,
+                    pos=elapsed,
+                )
                 await edit_message_styled(chat_id, msg_id, text=text, reply_markup=kb)
 
                 if elapsed >= duration:

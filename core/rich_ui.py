@@ -1,7 +1,6 @@
 """
-Now Playing UI — Yoru-style layout (FFGAMING credits only)
-Loading: compact NOÉ-style (bottom status, not big text blocks)
-Buttons: unchanged (handled in main/buttons)
+Now Playing UI — text body only (no progress inside text).
+Progress lives on the blue keyboard button (NOÉ style).
 """
 
 import re
@@ -34,7 +33,6 @@ def clean_name(text: str) -> str:
 
 
 def progress_bar(duration: int, pos: int = 0) -> str:
-    """NOÉ-style bottom bar: 01:24 ---♪------------ 06:47  (elapsed · bar · total)"""
     total = max(int(duration or 0), 1)
     pos = max(0, min(int(pos or 0), total))
     width = 14
@@ -87,6 +85,7 @@ async def send_rich(chat_id, html: str, reply_markup=None):
 
 
 def plain_now_playing(title, duration=0, requester="User", queued=False, queue_len=0, pos=0, autoplay=False):
+    """Body only — NO progress line (progress is the blue button under the message)."""
     title = clean_name(title)[:55]
     requester = clean_name(requester)
     dur = fmt_duration(duration)
@@ -99,14 +98,11 @@ def plain_now_playing(title, duration=0, requester="User", queued=False, queue_l
             f"👤 **REQUESTER :** {requester}"
         )
 
-    # Progress at BOTTOM of card (NOÉ style)
-    bar = progress_bar(duration, pos)
     return (
-        f"🎬 **STREAM HAS STARTED. ENJOY THE MUSIC |**\n\n"
-        f"🎵 **TITLE :** `{title}`\n"
-        f"⏱ **LENGTH :** `{dur} MINS`\n"
-        f"👤 **REQUESTER :** {requester}\n\n"
-        f"**|** `{bar}`"
+        f"| **Started streaming**\n\n"
+        f"**Title:** {title}\n\n"
+        f"**Duration:** {dur} min\n"
+        f"**Requested by:** {requester}"
     )
 
 
@@ -114,7 +110,6 @@ def html_now_playing(title, duration=0, requester="User", queued=False, thumb=""
     title = clean_name(title)[:70]
     requester = clean_name(requester)
     dur = fmt_duration(duration)
-    bar = progress_bar(duration, pos)
 
     media = ""
     if thumb and str(thumb).startswith("http"):
@@ -130,12 +125,11 @@ def html_now_playing(title, duration=0, requester="User", queued=False, thumb=""
 """.strip()
 
     return f"""
-<h3>🎬 STREAM HAS STARTED. ENJOY THE MUSIC |</h3>
+<h3>| Started streaming</h3>
 {media}
-<p>🎵 <b>TITLE :</b> {title}<br/>
-⏱ <b>LENGTH :</b> <code>{dur} MINS</code><br/>
-👤 <b>REQUESTER :</b> {requester}</p>
-<blockquote><code>{bar}</code></blockquote>
+<p><b>Title:</b> {title}<br/>
+<b>Duration:</b> {dur} min<br/>
+<b>Requested by:</b> {requester}</p>
 """.strip()
 
 
@@ -171,15 +165,11 @@ def html_search(kind: str, query: str = "", count: int = 0) -> str:
 </table>
 <blockquote>👇 Choose one from the buttons below</blockquote>
 """.strip()
-    return f"<h3>{icon} Searching {kind}...</h3><p>⏳ Please wait</p>"
+    return f"<h3>{icon} Searching {kind}...</h3>"
 
 
 def html_download(title: str, quality: str = "") -> str:
-    q = f" · <code>{quality}</code>" if quality else ""
-    return f"""
-<p>🔍 <b>Searching and downloading...</b>{q}</p>
-<blockquote>{clean_name(title)[:50]}</blockquote>
-""".strip()
+    return "<p>🔍 Searching and downloading...</p>"
 
 
 def html_queue(body: str) -> str:
@@ -203,18 +193,12 @@ def html_info(title: str, body: str) -> str:
     return f"<h3>{title}</h3><hr/><p>{body}</p>"
 
 
-# ── Loading status (NOÉ-style: compact, not big text blocks) ──
-
 def status_searching(kind="YouTube"):
-    return f"🔍 **Searching and downloading...**"
+    return "🔍 Searching and downloading..."
 
 
 def status_downloading(title, quality=""):
-    # Compact one-liner like NOÉ — title small under, not a big card
-    t = clean_name(title)[:45]
-    if quality:
-        return f"🔍 **Searching and downloading...**\n`{t}` · `{quality}`"
-    return f"🔍 **Searching and downloading...**\n`{t}`"
+    return "🔍 Searching and downloading..."
 
 
 def status_results(kind, query, count):
