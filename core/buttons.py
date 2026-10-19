@@ -1,9 +1,11 @@
 """
-Colored inline keyboards via Bot API style field.
-Progress bar = full-width primary button (outside message text) like NOÉ.
+Telegram UI helpers for the music player.
+
+Player progress is rendered as a full-width button beneath an artwork card.
 """
 
 import aiohttp
+
 from config import config
 
 
@@ -25,54 +27,92 @@ def progress_button_text(duration=0, pos=0):
     width = 14
     filled = int((pos / total) * width) if total else 0
     filled = min(max(filled, 0), width - 1)
-    bar = "-" * filled + "♪" + "-" * max(0, width - filled - 1)
+    bar = "━" * filled + "●" + "━" * max(0, width - filled - 1)
     return f"{_fmt(pos)}  {bar}  {_fmt(total)}"
 
 
-def player_keyboard_api(paused=False, autoplay=False, duration=0, pos=0):
-    """Controls + progress row as blue button (NOÉ style, outside text)."""
+def player_keyboard_api(paused=False, autoplay=False, duration=0, pos=0, queue_len=0):
+    """Build the now-playing controls and progress row."""
     ap = "ON" if autoplay else "OFF"
-    prog = progress_button_text(duration, pos)
+    pause_text = "▶ Resume" if paused else "Ⅱ Pause"
+    pause_action = "ctl|resume" if paused else "ctl|pause"
     return {
         "inline_keyboard": [
-            # Progress OUTSIDE text body — full-width blue bar
             [
                 {
-                    "text": prog,
+                    "text": progress_button_text(duration, pos),
                     "callback_data": "ctl|noop",
                     "style": "primary",
                 }
             ],
             [
-                {"text": "▶", "callback_data": "ctl|resume", "style": "success"},
-                {"text": "Ⅱ", "callback_data": "ctl|pause", "style": "primary"},
-                {"text": "↻", "callback_data": "ctl|replay", "style": "primary"},
-                {"text": "⏭", "callback_data": "ctl|skip", "style": "primary"},
-                {"text": "⏹", "callback_data": "ctl|stop", "style": "danger"},
+                {"text": "↻ Replay", "callback_data": "ctl|replay", "style": "primary"},
+                {
+                    "text": pause_text,
+                    "callback_data": pause_action,
+                    "style": "success" if paused else "primary",
+                },
+                {"text": "⏭ Skip", "callback_data": "ctl|skip", "style": "primary"},
             ],
             [
                 {
-                    "text": f"🔍 AUTOPLAY : {ap}",
+                    "text": f"☰ Queue · {queue_len}",
+                    "callback_data": "ctl|queue",
+                    "style": "success",
+                },
+                {"text": "⏹ End Queue", "callback_data": "ctl|stop", "style": "danger"},
+            ],
+            [
+                {
+                    "text": f"Autoplay: {ap}",
                     "callback_data": "ctl|autoplay",
-                    "style": "danger" if not autoplay else "success",
+                    "style": "success" if autoplay else "danger",
                 }
-            ],
-            [
-                {"text": "« 10s", "callback_data": "ctl|seekback", "style": "danger"},
-                {"text": "10s »", "callback_data": "ctl|seekfwd", "style": "danger"},
-            ],
-            [
-                {"text": "🎵 Close", "callback_data": "ctl|close", "style": "danger"},
             ],
         ]
     }
 
 
-async def send_message_styled(chat_id, text, reply_markup=None, parse_mode="Markdown"):
+def queue_keyboard_api():
+    """Controls shown on an item that has been added to the queue."""
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "▶ Play Now",
+                    "callback_data": "ctl|playnow",
+                    "style": "success",
+                },
+                {"text": "⏭ Skip", "callback_data": "ctl|skip", "style": "primary"},
+            ],
+            [{"text": "⏹ End Queue", "callback_data": "ctl|stop", "style": "danger"}],
+        ]
+    }
+
+
+async def _api_call(method, payload):
     token = getattr(config, "BOT_TOKEN", "") or ""
     if not token:
         return None
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    return data.get("result") or True
+                description = data.get("description") or data
+                if "not modified" in str(description).lower():
+                    return True
+                print(f"{method} fail: {description}")
+    except Exception as exc:
+        print(f"{method} error: {exc}")
+    return None
+
+
+async def send_message_styled(chat_id, text, reply_markup=None, parse_mode="HTML"):
     payload = {
         "chat_id": chat_id,
         "text": text,
@@ -81,63 +121,52 @@ async def send_message_styled(chat_id, text, reply_markup=None, parse_mode="Mark
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                data = await resp.json()
-                if data.get("ok"):
-                    return data.get("result")
-                print(f"sendMessage styled fail: {data}")
-                return None
-    except Exception as e:
-        print(f"sendMessage styled error: {e}")
-        return None
+    return await _api_call("sendMessage", payload)
 
 
-async def edit_message_styled(chat_id, message_id, text=None, reply_markup=None, parse_mode="Markdown"):
-    token = getattr(config, "BOT_TOKEN", "") or ""
-    if not token:
+async def send_photo_styled(
+    chat_id, photo, caption, reply_markup=None, parse_mode="HTML"
+):
+    payload = {
+        "chat_id": chat_id,
+        "photo": photo,
+        "caption": caption,
+        "parse_mode": parse_mode,
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    return await _api_call("sendPhoto", payload)
+
+
+async def edit_message_media_styled(
+    chat_id, message_id, photo, caption, reply_markup=None, parse_mode="HTML"
+):
+    media = {
+        "type": "photo",
+        "media": photo,
+        "caption": caption,
+        "parse_mode": parse_mode,
+    }
+    payload = {"chat_id": chat_id, "message_id": message_id, "media": media}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    return await _api_call("editMessageMedia", payload)
+
+
+async def edit_message_styled(
+    chat_id, message_id, text=None, reply_markup=None, parse_mode="HTML", media=False
+):
+    payload = {"chat_id": chat_id, "message_id": message_id}
+    if text is not None:
+        method = "editMessageCaption" if media else "editMessageText"
+        payload["caption" if media else "text"] = text
+        payload["parse_mode"] = parse_mode
+        if not media:
+            payload["disable_web_page_preview"] = True
+    elif reply_markup is not None:
+        method = "editMessageReplyMarkup"
+    else:
         return False
-    try:
-        async with aiohttp.ClientSession() as session:
-            if text is not None:
-                url = f"https://api.telegram.org/bot{token}/editMessageText"
-                payload = {
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "text": text,
-                    "parse_mode": parse_mode,
-                    "disable_web_page_preview": True,
-                }
-                if reply_markup is not None:
-                    payload["reply_markup"] = reply_markup
-                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    data = await resp.json()
-                    if data.get("ok"):
-                        return True
-                    # message not modified is ok
-                    desc = str((data.get("description") or "")).lower()
-                    if "not modified" in desc:
-                        return True
-                    print(f"editMessageText fail: {data}")
-                    return False
-            elif reply_markup is not None:
-                url = f"https://api.telegram.org/bot{token}/editMessageReplyMarkup"
-                payload = {
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "reply_markup": reply_markup,
-                }
-                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    data = await resp.json()
-                    if data.get("ok"):
-                        return True
-                    desc = str((data.get("description") or "")).lower()
-                    if "not modified" in desc:
-                        return True
-                    print(f"editMessageReplyMarkup fail: {data}")
-                    return False
-            return False
-    except Exception as e:
-        print(f"edit_message_styled error: {e}")
-        return False
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    return bool(await _api_call(method, payload))

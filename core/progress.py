@@ -4,10 +4,27 @@ Live progress: updates the BLUE progress BUTTON (outside message text).
 
 import asyncio
 import time
-from core.buttons import player_keyboard_api, edit_message_styled
+
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+from core.buttons import edit_message_styled, player_keyboard_api
 from core.rich_ui import plain_now_playing
 
 _tasks = {}
+
+
+def _to_pyrogram_keyboard(markup):
+    rows = []
+    for row in (markup or {}).get("inline_keyboard", []):
+        buttons = []
+        for button in row:
+            kwargs = {"text": button["text"]}
+            for key in ("callback_data", "url"):
+                if button.get(key):
+                    kwargs[key] = button[key]
+            buttons.append(InlineKeyboardButton(**kwargs))
+        rows.append(buttons)
+    return InlineKeyboardMarkup(rows)
 
 
 def cancel_progress(chat_id: int):
@@ -32,7 +49,9 @@ async def start_progress(
         return
 
     state = get_state_fn(chat_id)
-    state["np_msg_id"] = message.id if hasattr(message, "id") else message.get("message_id")
+    state["np_msg_id"] = (
+        message.id if hasattr(message, "id") else message.get("message_id")
+    )
     state["duration"] = duration
     state["start_ts"] = time.time()
     state["paused_at"] = None
@@ -56,7 +75,9 @@ async def start_progress(
                     elapsed = int(st.get("elapsed_base") or 0)
                 else:
                     start = st.get("start_ts") or time.time()
-                    elapsed = int(st.get("elapsed_base") or 0) + int(time.time() - start)
+                    elapsed = int(st.get("elapsed_base") or 0) + int(
+                        time.time() - start
+                    )
 
                 elapsed = max(0, min(elapsed, duration))
                 title_now = st.get("title") or title
@@ -64,16 +85,47 @@ async def start_progress(
 
                 # Keep body stable; only refresh keyboard progress button
                 text = plain_now_playing(
-                    title_now, duration, requester,
-                    queued=False, queue_len=len(st.get("queue") or []), pos=elapsed, autoplay=ap,
+                    title_now,
+                    duration,
+                    requester,
+                    queued=False,
+                    queue_len=len(st.get("queue") or []),
+                    pos=elapsed,
+                    autoplay=ap,
                 )
                 kb = player_keyboard_api(
                     paused=bool(st.get("paused")),
                     autoplay=ap,
                     duration=duration,
                     pos=elapsed,
+                    queue_len=len(st.get("queue") or []),
                 )
-                await edit_message_styled(chat_id, msg_id, text=text, reply_markup=kb)
+                media = bool(st.get("np_media"))
+                edited = await edit_message_styled(
+                    chat_id, msg_id, text=text, reply_markup=kb, media=media
+                )
+                if not edited:
+                    try:
+                        pyrogram_markup = _to_pyrogram_keyboard(kb)
+                        if media:
+                            await client.edit_message_caption(
+                                chat_id,
+                                msg_id,
+                                caption=text,
+                                reply_markup=pyrogram_markup,
+                                parse_mode="html",
+                            )
+                        else:
+                            await client.edit_message_text(
+                                chat_id,
+                                msg_id,
+                                text,
+                                reply_markup=pyrogram_markup,
+                                parse_mode="html",
+                                disable_web_page_preview=True,
+                            )
+                    except Exception as exc:
+                        print(f"progress message edit error: {exc}")
 
                 if elapsed >= duration:
                     break

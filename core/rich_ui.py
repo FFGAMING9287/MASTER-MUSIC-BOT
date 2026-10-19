@@ -4,9 +4,14 @@ Progress lives on the blue keyboard button (NOÉ style).
 Start/Help: full menu UI restored.
 """
 
+import html
 import re
+
 import aiohttp
+
 from config import config
+
+STICKER_PACK_URL = "https://t.me/addstickers/Vividbeetle2_by_fStikBot"
 
 
 def fmt_duration(sec):
@@ -74,7 +79,9 @@ async def send_rich(chat_id, html: str, reply_markup=None):
         payload["reply_markup"] = api_kb
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
                 data = await resp.json()
                 if data.get("ok"):
                     return True
@@ -85,29 +92,41 @@ async def send_rich(chat_id, html: str, reply_markup=None):
         return False
 
 
-def plain_now_playing(title, duration=0, requester="User", queued=False, queue_len=0, pos=0, autoplay=False):
-    """Body only — progress is the blue button under the message."""
-    title = clean_name(title)[:55]
-    requester = clean_name(requester)
+def plain_now_playing(
+    title,
+    duration=0,
+    requester="User",
+    queued=False,
+    queue_len=0,
+    pos=0,
+    autoplay=False,
+):
+    """HTML caption for the artwork card; progress and controls are buttons."""
+    title = html.escape(clean_name(title)[:70])
+    requester = html.escape(clean_name(requester))
     dur = fmt_duration(duration)
 
     if queued:
         return (
-            f"🎧 **ADDED TO QUEUE**\n\n"
-            f"🎵 **TITLE :** `{title}`\n"
-            f"⏱ **LENGTH :** `{dur} MINS`\n"
-            f"👤 **REQUESTER :** {requester}"
+            f"🎧 <b>Added to Queue · #{queue_len}</b>\n\n"
+            f"🎵 <b>Title:</b> <i>{title}</i>\n"
+            f"⏱ <b>Track Duration:</b> {dur}\n"
+            f"👤 <b>Requested By:</b> {requester}"
         )
 
     return (
-        f"| **Started streaming**\n\n"
-        f"**Title:** {title}\n\n"
-        f"**Duration:** {dur} min\n"
-        f"**Requested by:** {requester}"
+        "🎧 <b>Music Is Playing</b>\n\n"
+        f"🎵 <b>Now Playing:</b> <i>{title}</i>\n"
+        f"⏱ <b>Track Duration:</b> {dur}\n"
+        f"👤 <b>Requested By:</b> {requester}\n\n"
+        "🎼 <b>Your Track Is Now Playing</b>\n"
+        "🌿 Sit back, relax &amp; enjoy the music"
     )
 
 
-def html_now_playing(title, duration=0, requester="User", queued=False, thumb="", pos=0, autoplay=False) -> str:
+def html_now_playing(
+    title, duration=0, requester="User", queued=False, thumb="", pos=0, autoplay=False
+) -> str:
     title = clean_name(title)[:70]
     requester = clean_name(requester)
     dur = fmt_duration(duration)
@@ -196,7 +215,12 @@ def html_download(title: str, quality: str = "") -> str:
 
 
 def html_queue(body: str) -> str:
-    safe = body.replace("&", "&").replace("<", "<").replace(">", ">").replace("\n", "<br/>")
+    safe = (
+        body.replace("&", "&")
+        .replace("<", "<")
+        .replace(">", ">")
+        .replace("\n", "<br/>")
+    )
     return f"<h3>☰ Queue</h3><hr/><p>{safe}</p>"
 
 
@@ -217,12 +241,18 @@ def html_info(title: str, body: str) -> str:
 
 
 def status_searching(kind="YouTube"):
-    return "🔍 Searching and downloading..."
+    return f"🔍 Searching {kind}...\n\n" f"🎭 Sticker pack: {STICKER_PACK_URL}"
 
 
 def status_downloading(title, quality=""):
-    return "🔍 Searching and downloading..."
+    label = clean_name(title)[:55]
+    detail = f"\nQuality: {clean_name(quality)[:20]}" if quality else ""
+    return f"⬇️ Preparing {label}...{detail}\n\n" f"🎭 Sticker pack: {STICKER_PACK_URL}"
 
 
 def status_results(kind, query, count):
-    return f"{kind} **Results**\n\n🔎 `{query}`\n📊 **{count}**\n\n👇 Choose"
+    return (
+        f"🎵 {kind} Results\n\n🔎 {clean_name(query)[:70]}\n"
+        f"📊 Found: {count}\n👇 Choose a result below\n\n"
+        f"🎭 Sticker pack: {STICKER_PACK_URL}"
+    )
