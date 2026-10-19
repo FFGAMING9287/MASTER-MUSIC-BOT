@@ -11,8 +11,6 @@ import aiohttp
 
 from config import config
 
-STICKER_PACK_URL = "https://t.me/addstickers/Vividbeetle2_by_fStikBot"
-
 
 def fmt_duration(sec):
     if not sec:
@@ -241,18 +239,18 @@ def html_info(title: str, body: str) -> str:
 
 
 def status_searching(kind="YouTube"):
-    return f"🔍 Searching {kind}...\n\n" f"🎭 Sticker pack: {STICKER_PACK_URL}"
+    return f"🔍 Searching {kind}...\n\n⏳ Please wait."
 
 
 def status_downloading(title, quality=""):
     label = clean_name(title)[:55]
     detail = f"\nQuality: {clean_name(quality)[:20]}" if quality else ""
-    return f"⬇️ Preparing {label}...{detail}\n\n" f"🎭 Sticker pack: {STICKER_PACK_URL}"
+    return f"⬇️ Preparing {label}...{detail}\n\n⏳ Please wait."
 
 
 def status_results(kind, query, count):
+    icon = {"YouTube": "🎵", "Movie": "🎬", "Adult": "🔞"}.get(kind, "🔎")
     return (
-        f"🎵 {kind} Results\n\n🔎 {clean_name(query)[:70]}\n"
-        f"📊 Found: {count}\n👇 Choose a result below\n\n"
-        f"🎭 Sticker pack: {STICKER_PACK_URL}"
+        f"{icon} {kind} Results\n\n🔎 {clean_name(query)[:70]}\n"
+        f"📊 Found: {count}\n👇 Choose a result below"
     )

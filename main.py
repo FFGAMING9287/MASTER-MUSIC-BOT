@@ -18,6 +18,7 @@ from pyrogram.types import (
 
 from config import config
 from core.buttons import (
+    delete_message_styled,
     edit_message_media_styled,
     edit_message_styled,
     player_keyboard_api,
@@ -25,12 +26,12 @@ from core.buttons import (
     queue_keyboard_api,
     send_message_styled,
     send_photo_styled,
+    send_sticker_from_set,
 )
 from core.decorators import handle_error, register
 from core.duration import duration_from_file, duration_from_item
 from core.progress import cancel_progress, on_pause, on_resume, start_progress
 from core.rich_ui import (
-    STICKER_PACK_URL,
     clean_name,
     html_error,
     html_help,
@@ -57,12 +58,22 @@ from core.stream import (
     stop_stream,
 )
 from core.youtube import get_stream_info, search_youtube
-from movie_api import download_file, search_adult, search_movie
+from movie_api import (
+    download_file,
+    get_movie_box_downloads,
+    movie_box_proxy_url,
+    search_adult,
+    search_movie,
+    search_movie_box,
+)
 
 movie_cache = {}
+movie_box_cache = {}
 adult_cache = {}
 yt_cache = {}
 BOT_PUBLIC = True
+STICKER_SET_NAME = "Vividbeetle2_by_fStikBot"
+loading_stickers = {}
 
 
 def extract_args(text):
@@ -142,12 +153,6 @@ def build_queue_keyboard():
             ],
             [InlineKeyboardButton("⏹ End Queue", callback_data="ctl|stop")],
         ]
-    )
-
-
-def build_status_keyboard():
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🎭 Open Sticker Pack", url=STICKER_PACK_URL)]]
     )
 
 
@@ -327,6 +332,44 @@ else:
 
     client = app
 
+
+async def start_loading_sticker(chat_id):
+    """Send one actual sticker from the configured pack per active chat flow."""
+    if chat_id in loading_stickers:
+        return loading_stickers[chat_id]
+    result = await send_sticker_from_set(chat_id, STICKER_SET_NAME)
+    message_id = result.get("message_id") if isinstance(result, dict) else None
+
+    # MTProto-only deployments can still fetch the public set using Pyrogram.
+    if not message_id:
+        try:
+            sticker_set = await client.get_sticker_set(STICKER_SET_NAME)
+            sticker = next(iter(getattr(sticker_set, "stickers", []) or []), None)
+            if sticker:
+                sent = await client.send_sticker(chat_id, sticker.file_id)
+                message_id = getattr(sent, "id", None)
+        except Exception as exc:
+            print(f"Sticker pack send fallback failed: {type(exc).__name__}: {exc}")
+
+    if message_id:
+        loading_stickers[chat_id] = message_id
+    else:
+        print("Could not send sticker from the configured public sticker set.")
+    return message_id
+
+
+async def clear_loading_sticker(chat_id):
+    message_id = loading_stickers.pop(chat_id, None)
+    if not message_id:
+        return
+    deleted = await delete_message_styled(chat_id, message_id)
+    if not deleted:
+        try:
+            await client.delete_messages(chat_id, message_id)
+        except Exception:
+            pass
+
+
 PREFIXES = getattr(config, "PREFIXES", ["!", "/", "."])
 
 
@@ -353,6 +396,150 @@ def build_movie_keyboard(data, page=0):
     if nav:
         buttons.append(nav)
     return InlineKeyboardMarkup(buttons) if buttons else None
+
+
+def movie_box_episodes(result):
+    episodes = result.get("episodes") or []
+    languages = result.get("languages") or []
+    detail_path = (result.get("detailPath") or "").lower()
+    available = list(
+        dict.fromkeys(str(ep.get("language")) for ep in episodes if ep.get("language"))
+    )
+    preferred = next(
+        (lang for lang in available if lang.lower() in detail_path), None
+    ) or next((lang for lang in available if lang.lower() == "english"), None)
+    if preferred:
+        filtered = [ep for ep in episodes if ep.get("language") == preferred]
+        if filtered:
+            return filtered
+    if episodes:
+        return episodes
+
+    language = next(
+        (
+            item
+            for item in languages
+            if str(item.get("language", "")).lower() == "english"
+            and any(season.get("episodes") for season in item.get("seasons", []))
+        ),
+        next(
+            (
+                item
+                for item in languages
+                if any(season.get("episodes") for season in item.get("seasons", []))
+            ),
+            None,
+        ),
+    )
+    flattened = []
+    if language:
+        for season_data in language.get("seasons", []):
+            for episode_data in season_data.get("episodes", []):
+                flattened.append(
+                    {
+                        **episode_data,
+                        "season": episode_data.get(
+                            "season", season_data.get("season", 1)
+                        ),
+                        "language": language.get("language", "English"),
+                    }
+                )
+    return flattened
+
+
+def build_movie_box_results_keyboard(cache):
+    results = cache.get("results") or []
+    if not results:
+        return None
+    page_size = 5
+    page = max(0, int(cache.get("list_page", 0)))
+    start = page * page_size
+    end = min(start + page_size, len(results))
+    buttons = []
+    for idx in range(start, end):
+        item = results[idx]
+        kind = "📺" if str(item.get("type", "")).lower() in ("tv", "series") else "🎬"
+        title = clean_name(item.get("title", "Movie"))[:35]
+        year = item.get("year") or ""
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    f"{kind} {title} {year}".strip()[:58],
+                    callback_data=f"mbres|{idx}",
+                )
+            ]
+        )
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("← Prev", callback_data=f"mbpage|{page-1}"))
+    if end < len(results):
+        nav.append(InlineKeyboardButton("Next →", callback_data=f"mbpage|{page+1}"))
+    elif len(results) < int(cache.get("count", len(results))):
+        nav.append(
+            InlineKeyboardButton(
+                "More Results →", callback_data=f"mbmore|{cache.get('api_page', 1) + 1}"
+            )
+        )
+    if nav:
+        buttons.append(nav)
+    return InlineKeyboardMarkup(buttons)
+
+
+def build_movie_box_episode_keyboard(result_index, episodes, page=0):
+    if not episodes:
+        return None
+    page_size = 8
+    start = max(0, page) * page_size
+    end = min(start + page_size, len(episodes))
+    buttons = []
+    for ep in episodes[start:end]:
+        season = ep.get("season", 1)
+        episode = ep.get("episode")
+        if episode is None:
+            continue
+        label = f"▶ S{season}E{episode} {ep.get('language', '')}".strip()
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    label[:58], callback_data=f"mbep|{result_index}|{season}|{episode}"
+                )
+            ]
+        )
+    nav = []
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton(
+                "← Prev", callback_data=f"mbepage|{result_index}|{page-1}"
+            )
+        )
+    if end < len(episodes):
+        nav.append(
+            InlineKeyboardButton(
+                "Next →", callback_data=f"mbepage|{result_index}|{page+1}"
+            )
+        )
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("← Search results", callback_data="mbback")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def build_movie_box_quality_keyboard(options):
+    buttons = []
+    row = []
+    for idx, option in enumerate(options[:8]):
+        resolution = option.get("resolution")
+        quality = option.get("quality") or (f"{resolution}p" if resolution else "MP4")
+        row.append(
+            InlineKeyboardButton(f"⬇ {quality}"[:30], callback_data=f"mbq|{idx}")
+        )
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("← Search results", callback_data="mbback")])
+    return InlineKeyboardMarkup(buttons)
 
 
 def build_adult_keyboard(items, page=0):
@@ -652,23 +839,18 @@ async def song_cmd(_, message: Message):
             html_info("🎵 YouTube", "<code>/song <name></code>"),
             "🎵 `/song <name>`",
         )
-    status = await message.reply_text(
-        status_searching("YouTube"),
-        reply_markup=build_status_keyboard(),
-        parse_mode=None,
-    )
+    status = await message.reply_text(status_searching("YouTube"), parse_mode=None)
+    await start_loading_sticker(message.chat.id)
     req = requester_name(message.from_user)
     if "youtube.com" in query or "youtu.be" in query:
-        await status.edit_text(
-            status_downloading("YouTube"),
-            reply_markup=build_status_keyboard(),
-            parse_mode=None,
-        )
+        await status.edit_text(status_downloading("YouTube"), parse_mode=None)
         info = await get_stream_info(query)
         if not info:
+            await clear_loading_sticker(message.chat.id)
             return await status.edit_text("❌ Could not get stream", parse_mode=None)
         ok, msg = await play_yt_result(message.chat.id, info)
         if not ok:
+            await clear_loading_sticker(message.chat.id)
             return await status.edit_text(f"❌ {msg}", parse_mode=None)
         await send_now_playing(
             message.chat.id,
@@ -679,9 +861,11 @@ async def song_cmd(_, message: Message):
             info.get("thumb", ""),
             edit_msg=status,
         )
+        await clear_loading_sticker(message.chat.id)
         return
     results = await search_youtube(query, limit=6)
     if not results:
+        await clear_loading_sticker(message.chat.id)
         return await status.edit_text("❌ No results found", parse_mode=None)
     yt_cache[message.chat.id] = results
     kb = build_yt_keyboard(results)
@@ -704,15 +888,17 @@ async def yt_callback(_, callback: CallbackQuery):
     await callback.answer("Loading...")
     status = await callback.message.edit_text(
         status_downloading(item["title"]),
-        reply_markup=build_status_keyboard(),
         parse_mode=None,
     )
+    await start_loading_sticker(chat_id)
     req = requester_name(callback.from_user)
     info = await get_stream_info(item["url"])
     if not info:
+        await clear_loading_sticker(chat_id)
         return await status.edit_text("❌ Could not get stream", parse_mode=None)
     ok, msg = await play_yt_result(chat_id, info)
     if not ok:
+        await clear_loading_sticker(chat_id)
         return await status.edit_text(f"❌ {msg}", parse_mode=None)
     dur = info.get("duration") or item.get("duration") or 0
     await send_now_playing(
@@ -724,6 +910,7 @@ async def yt_callback(_, callback: CallbackQuery):
         item.get("thumb", ""),
         edit_msg=status,
     )
+    await clear_loading_sticker(chat_id)
 
 
 @client.on_message(filters.command(["movie", "mv"], PREFIXES) & ~filters.private)
@@ -741,21 +928,24 @@ async def movie_cmd(_, message: Message):
             html_info("🎬 Movies", "<code>/movie <name></code>"),
             "🎬 `/movie <name>`",
         )
-    status = await message.reply_text(
-        status_searching("movie"),
-        reply_markup=build_status_keyboard(),
-        parse_mode=None,
-    )
-    data = await search_movie(query)
+    status = await message.reply_text(status_searching("movie"), parse_mode=None)
+    await start_loading_sticker(message.chat.id)
+    data = await search_movie_box(query, page=1, per_page=10)
     if not data or not data.get("results"):
+        await clear_loading_sticker(message.chat.id)
         return await status.edit_text("❌ No results found", parse_mode=None)
-    movie_cache[message.chat.id] = {"data": data, "page": 0}
-    result = data["results"][0]
-    kb = build_movie_keyboard(data, 0)
+    movie_box_cache[message.chat.id] = {
+        "query": query,
+        "api_page": 1,
+        "per_page": 10,
+        "count": int(data.get("count") or len(data["results"])),
+        "results": data["results"],
+        "list_page": 0,
+        "options": None,
+    }
     await status.edit_text(
-        f"🎬 {clean_name(result.get('title', 'Movie'))} · {result.get('year', '')}\n"
-        f"Choose an episode below.\n\n🎭 Sticker pack: {STICKER_PACK_URL}",
-        reply_markup=kb,
+        status_results("Movie", query, data.get("count", len(data["results"]))),
+        reply_markup=build_movie_box_results_keyboard(movie_box_cache[message.chat.id]),
         parse_mode=None,
     )
 
@@ -775,11 +965,8 @@ async def play_cmd(_, message: Message):
             html_info("🎬 Play", "<code>/play <name></code>"),
             "🎬 `/play <name>`",
         )
-    status = await message.reply_text(
-        status_searching("movie"),
-        reply_markup=build_status_keyboard(),
-        parse_mode=None,
-    )
+    status = await message.reply_text(status_searching("movie"), parse_mode=None)
+    await start_loading_sticker(message.chat.id)
     data = await search_movie(query)
     if data and data.get("results"):
         movie_cache[message.chat.id] = {"data": data, "page": 0}
@@ -787,11 +974,12 @@ async def play_cmd(_, message: Message):
         kb = build_movie_keyboard(data, 0)
         await status.edit_text(
             f"🎬 {clean_name(result.get('title', 'Movie'))} · {result.get('year', '')}\n"
-            f"Choose an episode below.\n\n🎭 Sticker pack: {STICKER_PACK_URL}",
+            f"Choose an episode below.",
             reply_markup=kb,
             parse_mode=None,
         )
         return
+    await clear_loading_sticker(message.chat.id)
     await status.edit_text(f"❌ No movie.\nTry /song {query}", parse_mode=None)
 
 
@@ -812,13 +1000,11 @@ async def adult_cmd(_, message: Message):
             html_info("🔞 Adult", "<code>/adult <query></code>"),
             "🔞 `/adult <query>`",
         )
-    status = await message.reply_text(
-        status_searching("adult"),
-        reply_markup=build_status_keyboard(),
-        parse_mode=None,
-    )
+    status = await message.reply_text(status_searching("adult"), parse_mode=None)
+    await start_loading_sticker(message.chat.id)
     data = await search_adult(query)
     if not data or not data.get("items"):
+        await clear_loading_sticker(message.chat.id)
         return await status.edit_text("❌ No results found", parse_mode=None)
     items = data["items"]
     adult_cache[message.chat.id] = {"items": items, "page": 0}
@@ -826,6 +1012,221 @@ async def adult_cmd(_, message: Message):
     await status.edit_text(
         status_results("Adult", query, len(items)), reply_markup=kb, parse_mode=None
     )
+
+
+async def show_movie_box_download_choices(
+    message, chat_id, cache, result_index, season, episode
+):
+    result = cache["results"][result_index]
+    options = await get_movie_box_downloads(
+        str(result.get("id", "")),
+        str(result.get("detailPath", "")),
+        season=season,
+        episode=episode,
+    )
+    options = [item for item in (options or []) if item.get("url")]
+    if not options:
+        return await message.edit_text(
+            "❌ No downloadable streams were returned for this selection.",
+            parse_mode=None,
+        )
+    cache["download_context"] = {
+        "result_index": result_index,
+        "season": season,
+        "episode": episode,
+        "options": options,
+    }
+    title = clean_name(result.get("title", "Movie"))
+    label = f"{title} S{season}E{episode}" if season and episode else title
+    return await message.edit_text(
+        f"🎬 {label}\nChoose a quality:",
+        reply_markup=build_movie_box_quality_keyboard(options),
+        parse_mode=None,
+    )
+
+
+@client.on_callback_query(filters.regex(r"^mbpage\|"))
+@handle_error
+async def movie_box_page_callback(_, callback: CallbackQuery):
+    if not can_use(callback.from_user.id if callback.from_user else 0):
+        return await callback.answer("Private mode", show_alert=True)
+    cache = movie_box_cache.get(callback.message.chat.id)
+    if not cache:
+        return await callback.answer("Search expired")
+    cache["list_page"] = max(0, int(callback.data.split("|")[1]))
+    await callback.message.edit_text(
+        status_results("Movie", cache["query"], cache["count"]),
+        reply_markup=build_movie_box_results_keyboard(cache),
+        parse_mode=None,
+    )
+    await callback.answer()
+
+
+@client.on_callback_query(filters.regex(r"^mbmore\|"))
+@handle_error
+async def movie_box_more_callback(_, callback: CallbackQuery):
+    if not can_use(callback.from_user.id if callback.from_user else 0):
+        return await callback.answer("Private mode", show_alert=True)
+    chat_id = callback.message.chat.id
+    cache = movie_box_cache.get(chat_id)
+    if not cache:
+        return await callback.answer("Search expired")
+    page = int(callback.data.split("|")[1])
+    await callback.answer("Loading more results...")
+    data = await search_movie_box(
+        cache["query"], page=page, per_page=cache.get("per_page", 10)
+    )
+    if not data or not data.get("results"):
+        return await callback.message.edit_text(
+            "❌ No more results found.", parse_mode=None
+        )
+    cache["results"].extend(data["results"])
+    cache["api_page"] = page
+    cache["count"] = int(data.get("count") or cache["count"])
+    cache["list_page"] = (len(cache["results"]) - len(data["results"])) // 5 + 1
+    await callback.message.edit_text(
+        status_results("Movie", cache["query"], cache["count"]),
+        reply_markup=build_movie_box_results_keyboard(cache),
+        parse_mode=None,
+    )
+
+
+@client.on_callback_query(filters.regex(r"^mbback$"))
+@handle_error
+async def movie_box_back_callback(_, callback: CallbackQuery):
+    if not can_use(callback.from_user.id if callback.from_user else 0):
+        return await callback.answer("Private mode", show_alert=True)
+    cache = movie_box_cache.get(callback.message.chat.id)
+    if not cache:
+        return await callback.answer("Search expired")
+    cache["download_context"] = None
+    await callback.message.edit_text(
+        status_results("Movie", cache["query"], cache["count"]),
+        reply_markup=build_movie_box_results_keyboard(cache),
+        parse_mode=None,
+    )
+    await callback.answer()
+
+
+@client.on_callback_query(filters.regex(r"^mbres\|"))
+@handle_error
+async def movie_box_result_callback(_, callback: CallbackQuery):
+    if not can_use(callback.from_user.id if callback.from_user else 0):
+        return await callback.answer("Private mode", show_alert=True)
+    chat_id = callback.message.chat.id
+    cache = movie_box_cache.get(chat_id)
+    if not cache:
+        return await callback.answer("Search expired")
+    result_index = int(callback.data.split("|")[1])
+    if result_index >= len(cache["results"]):
+        return await callback.answer("Result expired")
+    result = cache["results"][result_index]
+    cache["selected_result"] = result_index
+    episodes = movie_box_episodes(result)
+    await callback.answer("Loading links..." if not episodes else "Choose an episode")
+    if episodes:
+        cache["episode_page"] = 0
+        title = clean_name(result.get("title", "Movie"))
+        year = result.get("year") or ""
+        return await callback.message.edit_text(
+            f"📺 {title} {year}\nChoose an episode:",
+            reply_markup=build_movie_box_episode_keyboard(result_index, episodes),
+            parse_mode=None,
+        )
+    return await show_movie_box_download_choices(
+        callback.message, chat_id, cache, result_index, 0, 0
+    )
+
+
+@client.on_callback_query(filters.regex(r"^mbepage\|"))
+@handle_error
+async def movie_box_episode_page_callback(_, callback: CallbackQuery):
+    if not can_use(callback.from_user.id if callback.from_user else 0):
+        return await callback.answer("Private mode", show_alert=True)
+    parts = callback.data.split("|")
+    result_index, page = int(parts[1]), int(parts[2])
+    cache = movie_box_cache.get(callback.message.chat.id)
+    if not cache or result_index >= len(cache["results"]):
+        return await callback.answer("Search expired")
+    episodes = movie_box_episodes(cache["results"][result_index])
+    cache["episode_page"] = page
+    title = clean_name(cache["results"][result_index].get("title", "Movie"))
+    await callback.message.edit_text(
+        f"📺 {title}\nChoose an episode:",
+        reply_markup=build_movie_box_episode_keyboard(result_index, episodes, page),
+        parse_mode=None,
+    )
+    await callback.answer()
+
+
+@client.on_callback_query(filters.regex(r"^mbep\|"))
+@handle_error
+async def movie_box_episode_callback(_, callback: CallbackQuery):
+    if not can_use(callback.from_user.id if callback.from_user else 0):
+        return await callback.answer("Private mode", show_alert=True)
+    parts = callback.data.split("|")
+    result_index, season, episode = map(int, parts[1:4])
+    chat_id = callback.message.chat.id
+    cache = movie_box_cache.get(chat_id)
+    if not cache or result_index >= len(cache["results"]):
+        return await callback.answer("Search expired")
+    await callback.answer("Getting download options...")
+    return await show_movie_box_download_choices(
+        callback.message, chat_id, cache, result_index, season, episode
+    )
+
+
+@client.on_callback_query(filters.regex(r"^mbq\|"))
+@handle_error
+async def movie_box_quality_callback(_, callback: CallbackQuery):
+    if not can_use(callback.from_user.id if callback.from_user else 0):
+        return await callback.answer("Private mode", show_alert=True)
+    chat_id = callback.message.chat.id
+    cache = movie_box_cache.get(chat_id)
+    context = cache.get("download_context") if cache else None
+    if not context:
+        return await callback.answer("Selection expired", show_alert=True)
+    option_index = int(callback.data.split("|")[1])
+    options = context.get("options") or []
+    if option_index >= len(options):
+        return await callback.answer("Quality expired", show_alert=True)
+    option = options[option_index]
+    source_url = option.get("url") or option.get("downloadUrl")
+    if not source_url:
+        return await callback.answer("No stream URL", show_alert=True)
+
+    result = cache["results"][context["result_index"]]
+    title = clean_name(result.get("title", "Movie"))
+    season, episode = context["season"], context["episode"]
+    label = f"{title} S{season}E{episode}" if season and episode else title
+    resolution = option.get("resolution")
+    quality = option.get("quality") or (f"{resolution}p" if resolution else "MP4")
+    await callback.answer("Downloading...")
+    await start_loading_sticker(chat_id)
+    status = await callback.message.edit_text(
+        status_downloading(label, quality), parse_mode=None
+    )
+    filename = f"{title.replace(' ', '_')}_{season}_{episode}_{quality}.mp4"
+    proxy_url = movie_box_proxy_url(source_url, filename)
+    local_path, info = await download_file(proxy_url, filename)
+    if not local_path:
+        await clear_loading_sticker(chat_id)
+        return await status.edit_text(f"❌ Download failed\n{info}", parse_mode=None)
+    success, message_text = await play_local_file(chat_id, local_path, label[:60])
+    if not success:
+        await clear_loading_sticker(chat_id)
+        return await status.edit_text(f"❌ {message_text}", parse_mode=None)
+    duration = await duration_from_file(local_path)
+    await send_now_playing(
+        chat_id,
+        label[:60],
+        duration,
+        requester_name(callback.from_user),
+        "queue" in message_text.lower(),
+        thumb=result.get("poster") or result.get("thumbnail") or "",
+        edit_msg=status,
+    )
+    await clear_loading_sticker(chat_id)
 
 
 @client.on_callback_query(filters.regex(r"^mvpage\|"))
@@ -842,7 +1243,7 @@ async def page_callback(_, callback: CallbackQuery):
     result = data["results"][0]
     await callback.message.edit_text(
         f"🎬 {clean_name(result.get('title', 'Movie'))} · Page {page + 1}\n\n"
-        f"Choose an episode below.\n\n🎭 Sticker pack: {STICKER_PACK_URL}",
+        f"Choose an episode below.",
         reply_markup=build_movie_keyboard(data, page),
         parse_mode=None,
     )
@@ -861,8 +1262,7 @@ async def adult_page_callback(_, callback: CallbackQuery):
     items = cached["items"]
     cached["page"] = page
     await callback.message.edit_text(
-        f"🔞 Page {page + 1} · {len(items)} results\n\n"
-        f"Choose a result below.\n\n🎭 Sticker pack: {STICKER_PACK_URL}",
+        f"🔞 Page {page + 1} · {len(items)} results\n\n" f"Choose a result below.",
         reply_markup=build_adult_keyboard(items, page),
         parse_mode=None,
     )
@@ -907,17 +1307,19 @@ async def movie_callback(_, callback: CallbackQuery):
     req = requester_name(callback.from_user)
     status = await callback.message.edit_text(
         status_downloading(f"{title} S{season}E{episode}", quality),
-        reply_markup=build_status_keyboard(),
         parse_mode=None,
     )
+    await start_loading_sticker(chat_id)
     filename = f"{title.replace(' ', '_')}_s{season}e{episode}_{quality}.mp4"
     local_path, info = await download_file(download_url, filename)
     if not local_path:
+        await clear_loading_sticker(chat_id)
         return await status.edit_text(f"❌ Download failed\n{info}", parse_mode=None)
     success, msg = await play_local_file(
         chat_id, local_path, f"{title} S{season}E{episode}"
     )
     if not success:
+        await clear_loading_sticker(chat_id)
         return await status.edit_text(f"❌ {msg}", parse_mode=None)
     dur = await duration_from_file(local_path)
     await send_now_playing(
@@ -929,6 +1331,7 @@ async def movie_callback(_, callback: CallbackQuery):
         thumb=thumb,
         edit_msg=status,
     )
+    await clear_loading_sticker(chat_id)
 
 
 @client.on_callback_query(filters.regex(r"^ad\|"))
@@ -955,15 +1358,17 @@ async def adult_callback(_, callback: CallbackQuery):
     req = requester_name(callback.from_user)
     status = await callback.message.edit_text(
         status_downloading(title, quality),
-        reply_markup=build_status_keyboard(),
         parse_mode=None,
     )
+    await start_loading_sticker(chat_id)
     filename = f"adult_{idx}_{quality}.mp4"
     local_path, info = await download_file(download_url, filename)
     if not local_path:
+        await clear_loading_sticker(chat_id)
         return await status.edit_text(f"❌ Download failed\n{info}", parse_mode=None)
     success, msg = await play_local_file(chat_id, local_path, title[:40])
     if not success:
+        await clear_loading_sticker(chat_id)
         return await status.edit_text(f"❌ {msg}", parse_mode=None)
     dur = duration_from_item(item) or await duration_from_file(local_path)
     await send_now_playing(
@@ -975,6 +1380,7 @@ async def adult_callback(_, callback: CallbackQuery):
         thumb=thumb,
         edit_msg=status,
     )
+    await clear_loading_sticker(chat_id)
 
 
 print("Bot loaded: pause/seek fixed (FFGAMING)")

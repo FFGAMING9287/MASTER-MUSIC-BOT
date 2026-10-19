@@ -8,6 +8,8 @@ import aiohttp
 
 from config import config
 
+_STICKER_SET_FILE_IDS = {}
+
 
 def _fmt(sec):
     try:
@@ -136,6 +138,37 @@ async def send_photo_styled(
     if reply_markup:
         payload["reply_markup"] = reply_markup
     return await _api_call("sendPhoto", payload)
+
+
+async def get_sticker_set_first_file_id(set_name):
+    """Resolve the first sticker in a public sticker set for this bot."""
+    cached = _STICKER_SET_FILE_IDS.get(set_name)
+    if cached:
+        return cached
+    result = await _api_call("getStickerSet", {"name": set_name})
+    stickers = result.get("stickers", []) if isinstance(result, dict) else []
+    file_id = next(
+        (item.get("file_id") for item in stickers if item.get("file_id")), None
+    )
+    if file_id:
+        _STICKER_SET_FILE_IDS[set_name] = file_id
+    return file_id
+
+
+async def send_sticker_from_set(chat_id, set_name):
+    """Send the first real sticker from a public pack, not its t.me link."""
+    file_id = await get_sticker_set_first_file_id(set_name)
+    if not file_id:
+        return None
+    return await _api_call("sendSticker", {"chat_id": chat_id, "sticker": file_id})
+
+
+async def delete_message_styled(chat_id, message_id):
+    if not chat_id or not message_id:
+        return False
+    return bool(
+        await _api_call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+    )
 
 
 async def edit_message_media_styled(

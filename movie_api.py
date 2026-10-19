@@ -4,23 +4,26 @@ Movie + Adult Downloader API integration
 - fulux-downloader-api.vercel.app (adult content)
 """
 
-import aiohttp
 import asyncio
 import os
 import time
 from datetime import timezone
 from email.utils import parsedate_to_datetime
-from typing import Optional, Dict, Tuple
-from urllib.parse import urlparse
+from typing import Dict, Optional, Tuple
+from urllib.parse import urlencode, urlparse
+
+import aiohttp
 
 MOVIE_API = "https://movie-downloader-api.vercel.app/api"
 FULUX_API = "https://fulux-downloader-api.vercel.app/api"
+MOVIE_BOX_API = "https://movie-box-api.co08.art/api"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "*/*",
     "Accept-Language": "en-US,en;q=0.9",
 }
+
 
 async def search_movie(query: str) -> Optional[Dict]:
     """Normal movie/TV search"""
@@ -35,6 +38,59 @@ async def search_movie(query: str) -> Optional[Dict]:
     except Exception as e:
         print(f"Movie search error: {e}")
         return None
+
+
+async def search_movie_box(
+    query: str, page: int = 1, per_page: int = 10
+) -> Optional[Dict]:
+    """Search movies and series through the user's Movie Box API endpoint."""
+    url = f"{MOVIE_BOX_API}/search"
+    params = {"q": query, "page": page, "perPage": per_page}
+    try:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
+            async with session.get(url, params=params) as resp:
+                if resp.status != 200:
+                    print(f"Movie Box search HTTP {resp.status}")
+                    return None
+                data = await resp.json()
+                if not isinstance(data, dict) or not isinstance(
+                    data.get("results"), list
+                ):
+                    return None
+                return data
+    except Exception as exc:
+        print(f"Movie Box search error: {type(exc).__name__}: {exc}")
+        return None
+
+
+async def get_movie_box_downloads(
+    subject_id: str, detail_path: str, season: int = 0, episode: int = 0
+) -> Optional[list]:
+    """Return the signed CDN choices from the documented /api/download route."""
+    url = f"{MOVIE_BOX_API}/download"
+    params = {
+        "subjectId": subject_id,
+        "detailPath": detail_path,
+        "se": season,
+        "ep": episode,
+        "supportCodecs[h264]": 1,
+        "supportCodecs[hevc]": 1,
+    }
+    try:
+        timeout = aiohttp.ClientTimeout(total=45)
+        async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
+            async with session.get(url, params=params) as resp:
+                if resp.status != 200:
+                    print(f"Movie Box download-options HTTP {resp.status}")
+                    return None
+                data = await resp.json()
+                options = (data.get("data") or {}).get("downloads")
+                return options if isinstance(options, list) else None
+    except Exception as exc:
+        print(f"Movie Box download-options error: {type(exc).__name__}: {exc}")
+        return None
+
 
 async def search_adult(query: str) -> Optional[Dict]:
     """Adult content search using Fulux API"""
@@ -52,10 +108,13 @@ async def search_adult(query: str) -> Optional[Dict]:
         print(f"Adult search error: {e}")
         return None
 
+
 # Serialize downloads in this process to avoid burst traffic from one Railway instance.
 _DOWNLOAD_SEMAPHORE = asyncio.Semaphore(1)
 DOWNLOAD_RETRIES = max(0, min(3, int(os.getenv("MOVIE_DOWNLOAD_RETRIES", "2"))))
-MAX_AUTOMATIC_RETRY_WAIT = max(0, min(300, int(os.getenv("MOVIE_MAX_RETRY_WAIT", "120"))))
+MAX_AUTOMATIC_RETRY_WAIT = max(
+    0, min(300, int(os.getenv("MOVIE_MAX_RETRY_WAIT", "120")))
+)
 
 
 def _retry_after_seconds(value: Optional[str]) -> Optional[float]:
@@ -80,7 +139,15 @@ def _safe_filename(filename: str) -> str:
     return name or "movie_download.mp4"
 
 
-async def download_file(download_url: str, filename: str) -> Tuple[Optional[str], Optional[str]]:
+def movie_box_proxy_url(download_url: str, filename: str) -> str:
+    """Build the API's documented /api/download-mp4 proxy URL."""
+    query = urlencode({"url": download_url, "filename": _safe_filename(filename)})
+    return f"{MOVIE_BOX_API}/download-mp4?{query}"
+
+
+async def download_file(
+    download_url: str, filename: str
+) -> Tuple[Optional[str], Optional[str]]:
     """Download media with bounded 429/5xx retries; return (path, final_url) or (None, error)."""
     os.makedirs("downloads", exist_ok=True)
     local_path = os.path.join("downloads", _safe_filename(filename))
@@ -88,7 +155,9 @@ async def download_file(download_url: str, filename: str) -> Tuple[Optional[str]
 
     async with _DOWNLOAD_SEMAPHORE:
         try:
-            async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
+            async with aiohttp.ClientSession(
+                headers=HEADERS, timeout=timeout
+            ) as session:
                 for attempt in range(DOWNLOAD_RETRIES + 1):
                     retry_delay = None
                     retry_reason = None
@@ -103,40 +172,71 @@ async def download_file(download_url: str, filename: str) -> Tuple[Optional[str]
                         )
 
                         if resp.status == 429:
-                            retry_delay = _retry_after_seconds(resp.headers.get("Retry-After"))
+                            retry_delay = _retry_after_seconds(
+                                resp.headers.get("Retry-After")
+                            )
                             if retry_delay is None:
-                                retry_delay = min(5 * (2 ** attempt), 30)
+                                retry_delay = min(5 * (2**attempt), 30)
                             retry_reason = f"HTTP 429 from {host}"
-                            if attempt >= DOWNLOAD_RETRIES or retry_delay > MAX_AUTOMATIC_RETRY_WAIT:
+                            if (
+                                attempt >= DOWNLOAD_RETRIES
+                                or retry_delay > MAX_AUTOMATIC_RETRY_WAIT
+                            ):
                                 wait_text = f"{retry_delay:.0f}s"
                                 return None, (
                                     f"CDN/provider rate limit (429) from {host}. "
                                     f"Retry after {wait_text}; automatic retries stopped. "
                                     "Please wait before trying again."
                                 )
-                            body = (await resp.content.read(400)).decode("utf-8", "replace").replace("\n", " ")
-                            print(f"{retry_reason}; retry in {retry_delay:.1f}s; body={body[:250]}")
+                            body = (
+                                (await resp.content.read(400))
+                                .decode("utf-8", "replace")
+                                .replace("\n", " ")
+                            )
+                            print(
+                                f"{retry_reason}; retry in {retry_delay:.1f}s; body={body[:250]}"
+                            )
                         elif resp.status in (500, 502, 503, 504):
                             if attempt >= DOWNLOAD_RETRIES:
-                                body = (await resp.content.read(400)).decode("utf-8", "replace").replace("\n", " ")
-                                return None, f"Temporary server error HTTP {resp.status} from {host}: {body[:200]}"
+                                body = (
+                                    (await resp.content.read(400))
+                                    .decode("utf-8", "replace")
+                                    .replace("\n", " ")
+                                )
+                                return (
+                                    None,
+                                    f"Temporary server error HTTP {resp.status} from {host}: {body[:200]}",
+                                )
                             retry_delay = min(2 ** (attempt + 1), 15)
                             retry_reason = f"HTTP {resp.status} from {host}"
                             print(f"{retry_reason}; retry in {retry_delay:.1f}s")
                         elif resp.status != 200:
-                            body = (await resp.content.read(400)).decode("utf-8", "replace").replace("\n", " ")
+                            body = (
+                                (await resp.content.read(400))
+                                .decode("utf-8", "replace")
+                                .replace("\n", " ")
+                            )
                             return None, (
                                 f"Download endpoint returned HTTP {resp.status} from {host} "
                                 f"(Content-Type: {content_type}). Response: {body[:200]}"
                             )
                         elif "text/html" in content_type.lower():
-                            body = (await resp.content.read(400)).decode("utf-8", "replace").replace("\n", " ")
-                            return None, f"Expected video but received HTML from {host}: {body[:200]}"
+                            body = (
+                                (await resp.content.read(400))
+                                .decode("utf-8", "replace")
+                                .replace("\n", " ")
+                            )
+                            return (
+                                None,
+                                f"Expected video but received HTML from {host}: {body[:200]}",
+                            )
                         else:
                             total = 0
                             try:
                                 with open(local_path, "wb") as file:
-                                    async for chunk in resp.content.iter_chunked(1024 * 128):
+                                    async for chunk in resp.content.iter_chunked(
+                                        1024 * 128
+                                    ):
                                         if chunk:
                                             file.write(chunk)
                                             total += len(chunk)
@@ -161,7 +261,9 @@ async def download_file(download_url: str, filename: str) -> Tuple[Optional[str]
                             return local_path, final_url
 
                     if retry_delay is not None:
-                        print(f"Waiting {retry_delay:.1f}s before retry ({retry_reason})")
+                        print(
+                            f"Waiting {retry_delay:.1f}s before retry ({retry_reason})"
+                        )
                         await asyncio.sleep(retry_delay)
                         continue
 
@@ -172,7 +274,10 @@ async def download_file(download_url: str, filename: str) -> Tuple[Optional[str]
                 os.remove(local_path)
             except OSError:
                 pass
-            return None, "Download timed out. Try again later; repeated immediate retries may trigger provider limits."
+            return (
+                None,
+                "Download timed out. Try again later; repeated immediate retries may trigger provider limits.",
+            )
         except aiohttp.ClientError as e:
             try:
                 os.remove(local_path)
