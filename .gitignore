@@ -2,6 +2,7 @@
 .vscode
 __pycache__
 */__pycache__
+/bot_settings_data/
 *.session*
 *.session-journal
 unknown_errors.txt

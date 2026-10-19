@@ -6,7 +6,15 @@ Download audio to local file so VC always has real sound.
 import asyncio
 import os
 import re
+
 import aiohttp
+
+from core.settings_store import (
+    create_cookie_tempfile,
+    delete_cookie_tempfile,
+    get_api_urls,
+    has_cookie,
+)
 
 PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
@@ -30,6 +38,90 @@ os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 UA = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"
 
 
+def _yt_dlp_options(cookie_path=None):
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+    }
+    if cookie_path:
+        options["cookiefile"] = cookie_path
+    return options
+
+
+def _yt_dlp_search(query: str, limit: int):
+    cookie_path = create_cookie_tempfile("youtube")
+    try:
+        from yt_dlp import YoutubeDL
+
+        options = _yt_dlp_options(cookie_path)
+        options["extract_flat"] = "in_playlist"
+        options["playlistend"] = limit
+        with YoutubeDL(options) as ydl:
+            result = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+        entries = (result or {}).get("entries") or []
+        output = []
+        for entry in entries[:limit]:
+            if not isinstance(entry, dict):
+                continue
+            video_id = entry.get("id") or ""
+            if not video_id:
+                continue
+            output.append(
+                {
+                    "id": video_id,
+                    "title": entry.get("title") or "Unknown",
+                    "duration": entry.get("duration") or 0,
+                    "uploader": entry.get("uploader") or entry.get("channel") or "",
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "thumb": entry.get("thumbnail")
+                    or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+                }
+            )
+        return output
+    except Exception as exc:
+        print(f"yt-dlp search fallback failed: {type(exc).__name__}")
+        return []
+    finally:
+        delete_cookie_tempfile(cookie_path)
+
+
+def _yt_dlp_stream(url: str):
+    cookie_path = create_cookie_tempfile("youtube")
+    try:
+        from yt_dlp import YoutubeDL
+
+        options = _yt_dlp_options(cookie_path)
+        options["format"] = "bestaudio/best"
+        with YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False)
+        if not info:
+            return None
+        stream_url = info.get("url")
+        formats = info.get("requested_formats") or []
+        if not stream_url and formats:
+            audio = next(
+                (item for item in formats if item.get("acodec") != "none"), None
+            )
+            stream_url = audio.get("url") if audio else None
+        if not stream_url:
+            return None
+        return {
+            "url": stream_url,
+            "title": info.get("title") or "YouTube",
+            "duration": info.get("duration") or 0,
+            "uploader": info.get("uploader") or info.get("channel") or "",
+            "mime": info.get("format_note") or "audio",
+            "is_local": False,
+        }
+    except Exception as exc:
+        print(f"yt-dlp stream fallback failed: {type(exc).__name__}")
+        return None
+    finally:
+        delete_cookie_tempfile(cookie_path)
+
+
 def extract_video_id(url_or_id: str) -> str:
     s = (url_or_id or "").strip()
     if re.fullmatch(r"[\w-]{11}", s):
@@ -43,7 +135,11 @@ def extract_video_id(url_or_id: str) -> str:
 
 async def _get_json(session, url, timeout=15):
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout), headers={"User-Agent": UA}) as r:
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+            headers={"User-Agent": UA},
+        ) as r:
             if r.status == 200:
                 return await r.json()
     except Exception as e:
@@ -53,9 +149,15 @@ async def _get_json(session, url, timeout=15):
 
 async def search_youtube(query: str, limit: int = 6):
     results = []
+    if has_cookie("youtube"):
+        cookie_results = await asyncio.to_thread(_yt_dlp_search, query, limit)
+        if cookie_results:
+            return cookie_results
     async with aiohttp.ClientSession() as session:
-        for base in PIPED_INSTANCES:
-            data = await _get_json(session, f"{base}/search?q={aiohttp.helpers.quote(query)}&filter=videos")
+        for base in get_api_urls("piped", PIPED_INSTANCES):
+            data = await _get_json(
+                session, f"{base}/search?q={aiohttp.helpers.quote(query)}&filter=videos"
+            )
             if not data or not isinstance(data, list):
                 if isinstance(data, dict):
                     data = data.get("items") or data.get("results") or []
@@ -64,9 +166,17 @@ async def search_youtube(query: str, limit: int = 6):
             for item in data:
                 if not isinstance(item, dict):
                     continue
-                if item.get("type") and item.get("type") not in ("stream", "video", None):
+                if item.get("type") and item.get("type") not in (
+                    "stream",
+                    "video",
+                    None,
+                ):
                     continue
-                vid = item.get("url", "").split("watch?v=")[-1].split("&")[0] if item.get("url") else item.get("id") or ""
+                vid = (
+                    item.get("url", "").split("watch?v=")[-1].split("&")[0]
+                    if item.get("url")
+                    else item.get("id") or ""
+                )
                 if not vid or len(vid) < 10:
                     vid = (item.get("url") or "").rstrip("/").split("/")[-1]
                 if not vid:
@@ -74,39 +184,50 @@ async def search_youtube(query: str, limit: int = 6):
                 title = item.get("title") or "Unknown"
                 duration = item.get("duration") or 0
                 uploader = item.get("uploader") or item.get("uploaderName") or ""
-                results.append({
-                    "id": vid,
-                    "title": title,
-                    "duration": duration,
-                    "uploader": uploader,
-                    "url": f"https://www.youtube.com/watch?v={vid}",
-                    "thumb": item.get("thumbnail") or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
-                })
+                results.append(
+                    {
+                        "id": vid,
+                        "title": title,
+                        "duration": duration,
+                        "uploader": uploader,
+                        "url": f"https://www.youtube.com/watch?v={vid}",
+                        "thumb": item.get("thumbnail")
+                        or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+                    }
+                )
                 if len(results) >= limit:
                     return results
             if results:
                 return results
 
-        for base in INVIDIOUS_INSTANCES:
-            data = await _get_json(session, f"{base}/api/v1/search?q={aiohttp.helpers.quote(query)}&type=video")
+        for base in get_api_urls("invidious", INVIDIOUS_INSTANCES):
+            data = await _get_json(
+                session,
+                f"{base}/api/v1/search?q={aiohttp.helpers.quote(query)}&type=video",
+            )
             if not data or not isinstance(data, list):
                 continue
             for item in data:
                 vid = item.get("videoId") or ""
                 if not vid:
                     continue
-                results.append({
-                    "id": vid,
-                    "title": item.get("title") or "Unknown",
-                    "duration": item.get("lengthSeconds") or 0,
-                    "uploader": item.get("author") or "",
-                    "url": f"https://www.youtube.com/watch?v={vid}",
-                    "thumb": (item.get("videoThumbnails") or [{}])[0].get("url") or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
-                })
+                results.append(
+                    {
+                        "id": vid,
+                        "title": item.get("title") or "Unknown",
+                        "duration": item.get("lengthSeconds") or 0,
+                        "uploader": item.get("author") or "",
+                        "url": f"https://www.youtube.com/watch?v={vid}",
+                        "thumb": (item.get("videoThumbnails") or [{}])[0].get("url")
+                        or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+                    }
+                )
                 if len(results) >= limit:
                     return results
             if results:
                 return results
+    if not results:
+        return await asyncio.to_thread(_yt_dlp_search, query, limit)
     return results
 
 
@@ -135,7 +256,7 @@ def _pick_audio_url(streams: list):
 
 
 async def _streams_piped(session, vid: str):
-    for base in PIPED_INSTANCES:
+    for base in get_api_urls("piped", PIPED_INSTANCES):
         data = await _get_json(session, f"{base}/streams/{vid}")
         if not data:
             continue
@@ -145,7 +266,7 @@ async def _streams_piped(session, vid: str):
         audios = data.get("audioStreams") or []
         url, mime = _pick_audio_url(audios)
         if not url:
-            for v in (data.get("videoStreams") or []):
+            for v in data.get("videoStreams") or []:
                 if v.get("url") and not v.get("videoOnly"):
                     url = v["url"]
                     mime = v.get("mimeType") or ""
@@ -164,7 +285,7 @@ async def _streams_piped(session, vid: str):
 
 
 async def _streams_invidious(session, vid: str):
-    for base in INVIDIOUS_INSTANCES:
+    for base in get_api_urls("invidious", INVIDIOUS_INSTANCES):
         data = await _get_json(session, f"{base}/api/v1/videos/{vid}")
         if not data:
             continue
@@ -175,7 +296,7 @@ async def _streams_invidious(session, vid: str):
         audio_fmts = [f for f in formats if "audio" in (f.get("type") or "")]
         url, mime = _pick_audio_url(audio_fmts)
         if not url:
-            for f in (data.get("formatStreams") or []):
+            for f in data.get("formatStreams") or []:
                 if f.get("url"):
                     url = f["url"]
                     mime = f.get("type") or ""
@@ -249,10 +370,16 @@ async def get_stream_info(url: str):
     if not vid:
         return None
 
-    async with aiohttp.ClientSession() as session:
-        info = await _streams_piped(session, vid)
-        if not info:
-            info = await _streams_invidious(session, vid)
+    info = None
+    if has_cookie("youtube"):
+        info = await asyncio.to_thread(_yt_dlp_stream, url)
+    if not info:
+        async with aiohttp.ClientSession() as session:
+            info = await _streams_piped(session, vid)
+            if not info:
+                info = await _streams_invidious(session, vid)
+    if not info:
+        info = await asyncio.to_thread(_yt_dlp_stream, url)
         if not info:
             print(f"No stream for {vid}")
             return None

@@ -101,6 +101,8 @@ $ sudo docker run musicplayer
 
 - `API_ID`: Telegram app id from https://my.telegram.org/apps.
 - `API_HASH`: Telegram app hash from https://my.telegram.org/apps.
+- `OWNER_ID`: Telegram numeric user ID allowed to manage owner-only settings. `SUDO_USERS` users are also accepted. Set this before using `/settings`.
+- `BOT_SETTINGS_DIR`: Private runtime directory for encrypted API endpoints and cookies. Default: `bot_settings_data`. Mount this directory on persistent hosting storage if settings should survive redeploys; do not commit it.
 - `SESSION`: Pyrogram string session. You can generate from [here](https://replit.com/@AsmSafone/genStr).
 - `SUDOERS`: ID of sudo users (separate multiple ids with space).
 - `BOT_TOKEN`: Telegram bot token from https://t.me/botfather. (optional)
@@ -122,6 +124,7 @@ Command | Description
 :--- | :---
 • !ping | Check if alive or not
 • !start / !help | Show the help for commands
+• /settings | Private owner menu to update built-in API endpoints, register labeled custom APIs, and add or remove API and YouTube cookies
 • !mode / !switch | Switch the stream mode (audio/video)
 • !p / !play [song name or youtube link] | Play a song in vc, if already playing add to queue
 • !radio / !stream [radio url or stream link] | Play a live stream in vc, if already playing add to queue

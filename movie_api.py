@@ -14,6 +14,8 @@ from urllib.parse import urlencode, urlparse
 
 import aiohttp
 
+from core.settings_store import get_api_url, get_cookie
+
 MOVIE_API = "https://movie-downloader-api.vercel.app/api"
 FULUX_API = "https://fulux-downloader-api.vercel.app/api"
 MOVIE_BOX_API = "https://movie-box-api.co08.art/api"
@@ -25,13 +27,31 @@ HEADERS = {
 }
 
 
+def _api_base(service: str, default: str) -> str:
+    return get_api_url(service, default).rstrip("/")
+
+
+def _api_headers(service: str) -> dict:
+    headers = dict(HEADERS)
+    cookie = get_cookie(service)
+    if cookie:
+        headers["Cookie"] = cookie
+    return headers
+
+
 async def search_movie(query: str) -> Optional[Dict]:
     """Normal movie/TV search"""
-    url = f"{MOVIE_API}/search"
+    url = f"{_api_base('legacy_movie', MOVIE_API)}/search"
     try:
         timeout = aiohttp.ClientTimeout(total=20)
-        async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
-            async with session.get(url, params={"q": query}) as resp:
+        async with aiohttp.ClientSession(
+            headers=_api_headers("legacy_movie"), timeout=timeout
+        ) as session:
+            async with session.get(
+                url,
+                params={"q": query},
+                allow_redirects=not bool(get_cookie("legacy_movie")),
+            ) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 return None
@@ -44,12 +64,18 @@ async def search_movie_box(
     query: str, page: int = 1, per_page: int = 10
 ) -> Optional[Dict]:
     """Search movies and series through the user's Movie Box API endpoint."""
-    url = f"{MOVIE_BOX_API}/search"
+    url = f"{_api_base('movie_box', MOVIE_BOX_API)}/search"
     params = {"q": query, "page": page, "perPage": per_page}
     try:
         timeout = aiohttp.ClientTimeout(total=30)
-        async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
-            async with session.get(url, params=params) as resp:
+        async with aiohttp.ClientSession(
+            headers=_api_headers("movie_box"), timeout=timeout
+        ) as session:
+            async with session.get(
+                url,
+                params=params,
+                allow_redirects=not bool(get_cookie("movie_box")),
+            ) as resp:
                 if resp.status != 200:
                     print(f"Movie Box search HTTP {resp.status}")
                     return None
@@ -68,7 +94,7 @@ async def get_movie_box_downloads(
     subject_id: str, detail_path: str, season: int = 0, episode: int = 0
 ) -> Optional[list]:
     """Return the signed CDN choices from the documented /api/download route."""
-    url = f"{MOVIE_BOX_API}/download"
+    url = f"{_api_base('movie_box', MOVIE_BOX_API)}/download"
     params = {
         "subjectId": subject_id,
         "detailPath": detail_path,
@@ -79,8 +105,14 @@ async def get_movie_box_downloads(
     }
     try:
         timeout = aiohttp.ClientTimeout(total=45)
-        async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
-            async with session.get(url, params=params) as resp:
+        async with aiohttp.ClientSession(
+            headers=_api_headers("movie_box"), timeout=timeout
+        ) as session:
+            async with session.get(
+                url,
+                params=params,
+                allow_redirects=not bool(get_cookie("movie_box")),
+            ) as resp:
                 if resp.status != 200:
                     print(f"Movie Box download-options HTTP {resp.status}")
                     return None
@@ -94,11 +126,17 @@ async def get_movie_box_downloads(
 
 async def search_adult(query: str) -> Optional[Dict]:
     """Adult content search using Fulux API"""
-    url = f"{FULUX_API}/search?q={query}"
+    url = f"{_api_base('adult', FULUX_API)}/search"
     try:
         timeout = aiohttp.ClientTimeout(total=25)
-        async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
-            async with session.get(url) as resp:
+        async with aiohttp.ClientSession(
+            headers=_api_headers("adult"), timeout=timeout
+        ) as session:
+            async with session.get(
+                url,
+                params={"q": query},
+                allow_redirects=not bool(get_cookie("adult")),
+            ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return data
@@ -142,7 +180,7 @@ def _safe_filename(filename: str) -> str:
 def movie_box_proxy_url(download_url: str, filename: str) -> str:
     """Build the API's documented /api/download-mp4 proxy URL."""
     query = urlencode({"url": download_url, "filename": _safe_filename(filename)})
-    return f"{MOVIE_BOX_API}/download-mp4?{query}"
+    return f"{_api_base('movie_box', MOVIE_BOX_API)}/download-mp4?{query}"
 
 
 async def download_file(

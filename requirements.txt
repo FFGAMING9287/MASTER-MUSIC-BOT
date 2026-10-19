@@ -3,6 +3,7 @@ pillow
 aiohttp
 aiofiles
 python-dotenv
+cryptography>=41.0.0
 youtube-search-python
 httpx
 spotipy

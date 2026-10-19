@@ -6,10 +6,15 @@ import asyncio
 
 asyncio.set_event_loop(asyncio.new_event_loop())
 import os
+import re
+import tempfile
+import time
+from urllib.parse import urlsplit
 
-from pyrogram import Client, filters
+from pyrogram import Client, StopPropagation, filters
 from pyrogram.types import (
     CallbackQuery,
+    ForceReply,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaPhoto,
@@ -46,6 +51,20 @@ from core.rich_ui import (
     status_results,
     status_searching,
 )
+from core.settings_store import (
+    DEFAULT_API_URLS,
+    delete_cookie,
+    delete_custom_api,
+    get_api_url,
+    get_api_urls,
+    get_custom_apis,
+    has_cookie,
+    set_api_url,
+    set_api_urls,
+    set_cookie,
+    set_custom_api,
+    validate_https_url,
+)
 from core.stream import (
     get_queue_text,
     get_state,
@@ -57,7 +76,12 @@ from core.stream import (
     skip_stream,
     stop_stream,
 )
-from core.youtube import get_stream_info, search_youtube
+from core.youtube import (
+    INVIDIOUS_INSTANCES,
+    PIPED_INSTANCES,
+    get_stream_info,
+    search_youtube,
+)
 from movie_api import (
     download_file,
     get_movie_box_downloads,
@@ -74,6 +98,30 @@ yt_cache = {}
 BOT_PUBLIC = True
 STICKER_SET_NAME = "Vividbeetle2_by_fStikBot"
 loading_stickers = {}
+settings_pending = {}
+
+API_SETTINGS = {
+    "movie_box": ("Movie Box API", "Movie/TV search and episode downloads for /movie."),
+    "legacy_movie": ("Legacy Movie API", "Existing movie provider used by /play."),
+    "adult": ("Adult API", "Search and downloads for /adult."),
+    "piped": (
+        "Piped instances",
+        "YouTube music search/stream resolution for /song and /yt.",
+    ),
+    "invidious": ("Invidious instances", "Fallback YouTube search/stream resolution."),
+}
+COOKIE_SETTINGS = {
+    "movie_box": (
+        "Movie Box API",
+        "Cookie header sent only to the configured Movie Box API host.",
+    ),
+    "legacy_movie": (
+        "Legacy Movie API",
+        "Cookie header sent only to the configured legacy API host.",
+    ),
+    "adult": ("Adult API", "Cookie header sent only to the configured adult API host."),
+    "youtube": ("YouTube", "Netscape cookies used by the yt-dlp fallback."),
+}
 
 
 def extract_args(text):
@@ -82,10 +130,9 @@ def extract_args(text):
 
 
 def is_owner(user_id: int) -> bool:
+    owner_id = int(getattr(config, "OWNER_ID", 0) or 0)
     sudo = getattr(config, "SUDO_USERS", []) or []
-    if not sudo:
-        return True
-    return user_id in sudo
+    return (bool(owner_id) and user_id == owner_id) or user_id in sudo
 
 
 def can_use(user_id: int) -> bool:
@@ -170,6 +217,114 @@ def start_keyboard():
             ],
         ]
     )
+
+
+def _display_api_url(url):
+    parts = urlsplit(url or "")
+    if not parts.hostname:
+        return "not configured"
+    host = parts.hostname
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return f"{parts.scheme}://{host}{parts.path}"[:110]
+
+
+def _api_values(key):
+    if key == "piped":
+        return get_api_urls(key, PIPED_INSTANCES)
+    if key == "invidious":
+        return get_api_urls(key, INVIDIOUS_INSTANCES)
+    return [get_api_url(key, DEFAULT_API_URLS.get(key, ""))]
+
+
+def settings_menu_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("API endpoints", callback_data="settings|apis"),
+                InlineKeyboardButton("Cookies", callback_data="settings|cookies"),
+            ]
+        ]
+    )
+
+
+def settings_api_text():
+    lines = [
+        "⚙️ API settings",
+        "Each API’s use is listed above its endpoint. Built-in entries update live bot providers.",
+    ]
+    for key, (label, purpose) in API_SETTINGS.items():
+        current = _api_values(key)
+        lines.append(f"\n{label} — {purpose}")
+        lines.extend(f"  {_display_api_url(url)}" for url in current[:3])
+        if len(current) > 3:
+            lines.append(f"  +{len(current) - 3} more")
+    custom = get_custom_apis()
+    lines.append(
+        "\nCustom API entries are saved with a use label; they need a command adapter before a bot command can call them."
+    )
+    for name, item in sorted(custom.items()):
+        lines.append(f"\n{name} — {item['purpose']}\n  {_display_api_url(item['url'])}")
+    return "\n".join(lines)[:3900]
+
+
+def settings_api_keyboard():
+    rows = []
+    builtin_keys = list(API_SETTINGS)
+    for index in range(0, len(builtin_keys), 2):
+        row = [
+            InlineKeyboardButton(
+                f"Edit {API_SETTINGS[key][0]}", callback_data=f"settings|api|{key}"
+            )
+            for key in builtin_keys[index : index + 2]
+        ]
+        rows.append(row)
+    rows.append(
+        [InlineKeyboardButton("＋ Add custom API", callback_data="settings|addapi")]
+    )
+    for name in sorted(get_custom_apis())[:8]:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"Edit {name}"[:32], callback_data=f"settings|customedit|{name}"
+                ),
+                InlineKeyboardButton(
+                    "Delete", callback_data=f"settings|customdel|{name}"
+                ),
+            ]
+        )
+    rows.append([InlineKeyboardButton("← Settings", callback_data="settings|menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def settings_cookie_text():
+    lines = [
+        "🔐 Cookie settings",
+        "Cookies are encrypted at rest and never displayed here. Use /settings in a private chat only.",
+        "API cookies go only to that configured API host. YouTube Netscape cookies are used by the yt-dlp fallback.",
+    ]
+    for key, (label, purpose) in COOKIE_SETTINGS.items():
+        status = "configured" if has_cookie(key) else "not set"
+        lines.append(f"\n{label} — {purpose}\n  Status: {status}")
+    return "\n".join(lines)
+
+
+def settings_cookie_keyboard():
+    rows = []
+    for key, (label, _) in COOKIE_SETTINGS.items():
+        status = "✅" if has_cookie(key) else "＋"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{status} {label}", callback_data=f"settings|cookie|{key}"
+                ),
+                InlineKeyboardButton(
+                    "Delete", callback_data=f"settings|delcookie|{key}"
+                ),
+            ]
+        )
+    rows.append([InlineKeyboardButton("← Settings", callback_data="settings|menu")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def reply_rich_or_text(message, html, plain, reply_markup=None):
@@ -371,6 +526,302 @@ async def clear_loading_sticker(chat_id):
 
 
 PREFIXES = getattr(config, "PREFIXES", ["!", "/", "."])
+
+
+def _is_private_chat(chat):
+    kind = getattr(chat, "type", "")
+    return str(getattr(kind, "value", kind)).lower() == "private"
+
+
+async def _ask_settings_input(user_id, text, state):
+    prompt = await client.send_message(
+        user_id, text, reply_markup=ForceReply(), parse_mode=None
+    )
+    state["prompt_id"] = prompt.id
+    state["expires"] = time.time() + 300
+    settings_pending[user_id] = state
+
+
+def _settings_intro():
+    return (
+        "⚙️ Owner settings — private chat only.\n"
+        "Built-in API endpoints update their live bot providers. Cookies and API URLs are encrypted at rest.\n"
+        "Keep the bot_settings_data directory on persistent hosting storage to retain settings after redeploys."
+    )
+
+
+@client.on_message(
+    filters.command("settings", PREFIXES) & filters.private & ~filters.bot
+)
+async def settings_command(_, message: Message):
+    user_id = message.from_user.id if message.from_user else 0
+    if not is_owner(user_id):
+        return await message.reply_text(
+            "🔒 Owner only. Configure OWNER_ID or SUDO_USERS in the bot environment.",
+            parse_mode=None,
+        )
+    await message.reply_text(
+        _settings_intro(), reply_markup=settings_menu_keyboard(), parse_mode=None
+    )
+
+
+@client.on_message(
+    filters.command("settings", PREFIXES) & ~filters.private & ~filters.bot
+)
+async def settings_group_command(_, message: Message):
+    user_id = message.from_user.id if message.from_user else 0
+    if is_owner(user_id):
+        return await message.reply_text(
+            "For privacy, open the bot in a private chat and send /settings there.",
+            parse_mode=None,
+        )
+    return await message.reply_text("🔒 Owner only.", parse_mode=None)
+
+
+@client.on_callback_query(filters.regex(r"^settings\|"))
+async def settings_callback(_, callback: CallbackQuery):
+    user_id = callback.from_user.id if callback.from_user else 0
+    if not is_owner(user_id):
+        return await callback.answer("Owner only", show_alert=True)
+    if not callback.message or not _is_private_chat(callback.message.chat):
+        return await callback.answer("Use settings in a private chat", show_alert=True)
+
+    parts = callback.data.split("|")
+    action = parts[1] if len(parts) > 1 else "menu"
+    if action == "menu":
+        await callback.message.edit_text(
+            _settings_intro(), reply_markup=settings_menu_keyboard(), parse_mode=None
+        )
+    elif action == "apis":
+        await callback.message.edit_text(
+            settings_api_text(), reply_markup=settings_api_keyboard(), parse_mode=None
+        )
+    elif action == "cookies":
+        await callback.message.edit_text(
+            settings_cookie_text(),
+            reply_markup=settings_cookie_keyboard(),
+            parse_mode=None,
+        )
+    elif action == "api" and len(parts) == 3:
+        key = parts[2]
+        if key not in API_SETTINGS:
+            return await callback.answer("Unknown API setting", show_alert=True)
+        label = API_SETTINGS[key][0]
+        if key in ("piped", "invidious"):
+            prompt = (
+                f"{label}: send comma-separated HTTPS base URLs, in preferred order. "
+                "This replaces the current instance list."
+            )
+            kind = "api_urls"
+        else:
+            prompt = (
+                f"{label}: send the HTTPS API base URL (include /api where required). "
+                "Query strings and embedded credentials are not accepted."
+            )
+            kind = "api_url"
+        await _ask_settings_input(user_id, prompt, {"kind": kind, "key": key})
+        await callback.answer("Reply to the prompt")
+    elif action == "addapi":
+        await _ask_settings_input(
+            user_id,
+            "Add a custom API registry entry as: name | purpose/use | https://api.example/path. "
+            "Custom entries are labeled and saved, but need a code adapter before a bot command can call them.",
+            {"kind": "custom_add"},
+        )
+        await callback.answer("Reply to the prompt")
+    elif action == "customedit" and len(parts) == 3:
+        item = get_custom_apis().get(parts[2])
+        if not item:
+            return await callback.answer("Custom API not found", show_alert=True)
+        await _ask_settings_input(
+            user_id,
+            f"Send the new HTTPS base URL for custom API {parts[2]}.",
+            {"kind": "custom_url", "name": parts[2], "purpose": item["purpose"]},
+        )
+        await callback.answer("Reply to the prompt")
+    elif action == "customdel" and len(parts) == 3:
+        delete_custom_api(parts[2])
+        await callback.message.edit_text(
+            settings_api_text(), reply_markup=settings_api_keyboard(), parse_mode=None
+        )
+        await callback.answer("Custom API deleted")
+    elif action == "cookie" and len(parts) == 3:
+        key = parts[2]
+        if key not in COOKIE_SETTINGS:
+            return await callback.answer("Unknown cookie service", show_alert=True)
+        if key == "youtube":
+            prompt = (
+                "Upload a Netscape-format YouTube cookies.txt as a .txt document, or paste its full contents. "
+                "This private reply will be deleted after processing."
+            )
+        else:
+            prompt = (
+                f"Send the Cookie header for {COOKIE_SETTINGS[key][0]} as name=value; name2=value2. "
+                "It is sent only to that configured API host and this private reply will be deleted."
+            )
+        await _ask_settings_input(user_id, prompt, {"kind": "cookie", "key": key})
+        await callback.answer("Reply to the prompt")
+    elif action == "delcookie" and len(parts) == 3:
+        if parts[2] not in COOKIE_SETTINGS:
+            return await callback.answer("Unknown cookie service", show_alert=True)
+        delete_cookie(parts[2])
+        await callback.message.edit_text(
+            settings_cookie_text(),
+            reply_markup=settings_cookie_keyboard(),
+            parse_mode=None,
+        )
+        await callback.answer("Cookie removed")
+    else:
+        await callback.answer("Unknown settings action", show_alert=True)
+
+
+def _validate_cookie_payload(service, value):
+    value = value.strip()
+    if not value or len(value.encode("utf-8")) > 100_000:
+        raise ValueError("Cookie content is empty or larger than 100 KB.")
+    if service == "youtube":
+        lines = value.splitlines()
+        has_header = any("Netscape HTTP Cookie File" in line for line in lines[:10])
+        has_cookie_row = False
+        for line in lines:
+            row = line[len("#HttpOnly_") :] if line.startswith("#HttpOnly_") else line
+            if not row.strip() or (
+                row.startswith("#") and not line.startswith("#HttpOnly_")
+            ):
+                continue
+            fields = row.split("\t")
+            if len(fields) >= 7 and fields[5] and fields[6]:
+                has_cookie_row = True
+                break
+        if not has_header or not has_cookie_row:
+            raise ValueError("Use a valid Netscape-format YouTube cookies.txt file.")
+        return value
+
+    if "\n" in value or "\r" in value:
+        raise ValueError("API cookies must be a single Cookie header line.")
+    if value.lower().startswith("cookie:"):
+        value = value.split(":", 1)[1].strip()
+    pairs = [part.strip() for part in value.split(";") if part.strip()]
+    if not pairs or any(
+        "=" not in part or not part.split("=", 1)[0].strip() for part in pairs
+    ):
+        raise ValueError("Use a Cookie header like name=value; name2=value2.")
+    return "; ".join(pairs)
+
+
+async def _settings_input_text(message, state):
+    if state["kind"] == "cookie" and state["key"] == "youtube" and message.document:
+        document = message.document
+        if document.file_size and document.file_size > 100_000:
+            raise ValueError("Cookie file must be 100 KB or smaller.")
+        if document.file_name and not document.file_name.lower().endswith(".txt"):
+            raise ValueError("Upload the Netscape cookie file as a .txt document.")
+        descriptor, path = tempfile.mkstemp(
+            prefix="youtube-cookie-upload-", suffix=".txt"
+        )
+        os.close(descriptor)
+        try:
+            await message.download(file_name=path)
+            with open(path, "r", encoding="utf-8") as cookie_file:
+                return cookie_file.read()
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    return message.text or message.caption or ""
+
+
+@client.on_message(filters.private & (filters.text | filters.document) & ~filters.bot)
+async def settings_input_handler(_, message: Message):
+    user_id = message.from_user.id if message.from_user else 0
+    if not is_owner(user_id):
+        return
+    state = settings_pending.get(user_id)
+    if not state:
+        return
+    reply = message.reply_to_message
+    if not reply or reply.id != state.get("prompt_id"):
+        return
+    if state.get("expires", 0) < time.time():
+        settings_pending.pop(user_id, None)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await client.send_message(
+            user_id, "Settings prompt expired. Send /settings again."
+        )
+        raise StopPropagation
+
+    kind = state.get("kind")
+    try:
+        text = await _settings_input_text(message, state)
+        if kind == "api_url":
+            url = validate_https_url(text)
+            set_api_url(state["key"], url)
+            result = "✅ API endpoint saved. It applies to the next request; no restart is needed."
+        elif kind == "api_urls":
+            urls = [item.strip() for item in re.split(r"[,\n]+", text) if item.strip()]
+            set_api_urls(state["key"], urls)
+            result = "✅ API instance list saved. It applies to the next request."
+        elif kind == "custom_add":
+            fields = [item.strip() for item in text.split("|", 2)]
+            if len(fields) != 3:
+                raise ValueError(
+                    "Format: name | purpose/use | https://api.example/path"
+                )
+            name, purpose, url = fields
+            name = name.lower()
+            if name in API_SETTINGS:
+                raise ValueError("That name is reserved for a built-in API.")
+            set_custom_api(name, purpose, url)
+            result = "✅ Custom API saved with its use label. It needs a code adapter before commands can call it."
+        elif kind == "custom_url":
+            set_custom_api(state["name"], state["purpose"], text)
+            result = "✅ Custom API URL updated in the registry."
+        elif kind == "cookie":
+            cookie_value = _validate_cookie_payload(state["key"], text)
+            set_cookie(state["key"], cookie_value)
+            result = "✅ Cookie saved encrypted. The submitted private message is being deleted."
+        else:
+            raise ValueError("Unknown settings prompt.")
+        settings_pending.pop(user_id, None)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await client.send_message(
+            user_id,
+            result + "\nUse /settings to view or change settings.",
+            reply_markup=settings_menu_keyboard(),
+            parse_mode=None,
+        )
+    except ValueError as exc:
+        settings_pending.pop(user_id, None)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await client.send_message(
+            user_id,
+            f"❌ {exc}\nOpen /settings and try again.",
+            reply_markup=settings_menu_keyboard(),
+            parse_mode=None,
+        )
+    except Exception:
+        settings_pending.pop(user_id, None)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await client.send_message(
+            user_id,
+            "❌ Could not save settings. Check the bot's private persistent storage and retry.",
+            reply_markup=settings_menu_keyboard(),
+            parse_mode=None,
+        )
+    raise StopPropagation
 
 
 def build_movie_keyboard(data, page=0):
